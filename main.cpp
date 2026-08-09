@@ -355,14 +355,20 @@ private:
 		// playing. Pairs act on the Trigger immediately (see the file header
 		// for why that is safe); singles are read as STATE when the switch is
 		// released, so nothing is dispatched for them here.
+		//
+		// Only the BUTTON dispatch is suppressed. PlayControl() still runs, so
+		// the loop keeps playing while you pick a mode — an early return here
+		// froze the transport for as long as a finger was on the switch, which
+		// is not something a performer would ever ask for mid-set.
 		if (selectArmed_)
 		{
 			if (ev == LevelEvent::Trigger && idx >= kNumSingles)
 				FireAction(kActionForPair[idx - kNumSingles]);
-			return;
 		}
-
-		if (ev == LevelEvent::Trigger) FireCombo(idx);
+		else if (ev == LevelEvent::Trigger)
+		{
+			FireCombo(idx);
+		}
 
 		PlayControl();
 	}
@@ -629,7 +635,11 @@ private:
 		// FX are momentary: an effect is only held while its button is. The
 		// level detector reports the combo the CV is sitting on, so a released
 		// button shows up as the CV leaving that level.
-		if (mode_ == Mode::Fx1 || mode_ == Mode::Fx2)
+		//
+		// Not while the switch is down, though — those presses are choosing a
+		// mode, and reading them here would fire effects (and light their
+		// LEDs) from the gesture used to leave the mode.
+		if ((mode_ == Mode::Fx1 || mode_ == Mode::Fx2) && !selectArmed_)
 		{
 			int8_t cur = levels_.Current();
 			fxHeld_ = (cur >= 0 && cur < kNumFxPerBank)

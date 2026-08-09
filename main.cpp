@@ -469,9 +469,8 @@ private:
 
 	void SetMode(Mode m)
 	{
-		if (m == mode_) { modeFlash_ = kModeFlashTicks; return; }
-		mode_      = m;
-		modeFlash_ = kModeFlashTicks;
+		if (m == mode_) return;
+		mode_ = m;
 
 		// Leaving a mode drops anything it was holding, so an effect cannot be
 		// left stuck on by switching away mid-press.
@@ -510,7 +509,6 @@ private:
 			// that does not.
 			break;
 		}
-		actionFlash_ = kModeFlashTicks;
 	}
 
 	/// A genuine new press from the level detector, dispatched by mode.
@@ -585,7 +583,16 @@ private:
 	void __not_in_flash_func(TriggerVoice)(int8_t voice)
 	{
 		if (voice < 0 || voice >= kNumVoices) return;
-		if (muted_ & (1u << MuteGroupOf(voice))) return;
+
+		const uint8_t grp = MuteGroupOf(voice);
+
+		// Flash the group whether or not it sounds. Mute mode shows a muted
+		// group's hits DIMMER rather than hiding them, so you can see the
+		// pattern you have silenced still going past — which is what makes it
+		// possible to time bringing it back in.
+		groupFlash_[grp] = kCtrlRate / 8;
+
+		if (muted_ & (1u << grp)) return;
 
 		drums_.TriggerVoice(voice, toneKnob_);
 		gateTimer_ = kGateSamples;
@@ -997,8 +1004,8 @@ private:
 
 		for (int i = 0; i < 4; i++)
 			if (ledFlash_[i] > 0) ledFlash_[i]--;
-		if (modeFlash_   > 0) modeFlash_--;
-		if (actionFlash_ > 0) actionFlash_--;
+		for (int i = 0; i < kNumMuteGroups; i++)
+			if (groupFlash_[i] > 0) groupFlash_[i]--;
 
 		uiTicks_++;
 
@@ -1023,58 +1030,28 @@ private:
 			return;
 		}
 
-		// --- a mode or action was just committed --------------------------
-		if (modeFlash_ > 0 || actionFlash_ > 0)
-		{
-			ModeFlashLeds();
-			return;
-		}
-
 		// --- normal play ---------------------------------------------------
+		//
+		// There is deliberately NO mode-change animation. One used to play a
+		// per-mode pattern across LEDs 0-3 on every latch, and it read as
+		// noise rather than information — "a bit odd" from the bench. The
+		// pulsing shift button below says which mode you are in continuously,
+		// which is strictly more useful than a pattern you have to catch.
 		ModeLeds();
 	}
 
-	/// The short announcement played when a mode is latched or an action fires.
+	/// The mode reminder, shown on the shift button of the current mode.
 	///
-	/// Four modes on six single-colour LEDs with no screen means the steady
-	/// display cannot also carry "which mode am I in" — LEDs 0-3 are busy
-	/// showing content in every mode. So the mode is announced on the
-	/// TRANSITION instead, as a distinct pattern per mode.
-	void __not_in_flash_func(ModeFlashLeds)()
+	/// A slow quarter-brightness pulse. It has to be unmistakably NOT a hit —
+	/// the other three pads in these modes are flashing at full or half — so
+	/// it is both dim and slow, which no hit ever is.
+	///
+	/// This is what replaced the mode-change animation. A continuous reminder
+	/// beats a transient one: it answers "which mode am I in" at any moment
+	/// rather than only in the second after you changed it.
+	uint16_t __not_in_flash_func(ModeReminder)() const
 	{
-		bool on = ((uiTicks_ >> kBlinkFast) & 1) != 0;
-
-		if (actionFlash_ > 0)
-		{
-			// An action is not a mode: mark it on the two status LEDs only, so
-			// it never reads as "you changed mode".
-			for (int i = 0; i < 4; i++) LedOff(i);
-			LedOn(4, on);
-			LedOn(5, on);
-			return;
-		}
-
-		switch (mode_)
-		{
-		case Mode::Drums:                          // all four, together
-			for (int i = 0; i < 4; i++) LedOn(i, on);
-			break;
-		case Mode::Mute:                           // left column
-			for (int i = 0; i < 4; i++) LedOn(i, on && ((i & 1) == 0));
-			break;
-		case Mode::Fx1:                            // right column
-			for (int i = 0; i < 4; i++) LedOn(i, on && ((i & 1) == 1));
-			break;
-		case Mode::Fx2:                            // checkerboard
-			for (int i = 0; i < 4; i++) LedOn(i, on == (i == 0 || i == 3));
-			break;
-		case Mode::WebUi:
-		default:
-			for (int i = 0; i < 4; i++) LedOff(i);
-			break;
-		}
-		LedOff(4);
-		LedOff(5);
+		return ((uiTicks_ >> kBlinkSlow) & 1) ? kLedQuarter : 0;
 	}
 
 	/// The steady per-mode display.
@@ -1082,30 +1059,38 @@ private:
 	{
 		switch (mode_)
 		{
-		case Mode::Mute:
 		case Mode::Fx1:
 		case Mode::Fx2:
 		{
-			// Each slot is shown on the BUTTON THAT PLAYS IT, which is not the
-			// slot's own index: the shift button is skipped, so in Mute mode
-			// (shift B) groups 0/1/2 live on A/C/D. Showing them at 0/1/2
-			// would light B — the shift, which is not a group at all — and
-			// leave D dark.
-			//
-			// The shift button itself glows dim, as a reminder of which button
-			// to hold.
+			// Nothing but the effect being held, lit for exactly as long as it
+			// is held. No other feedback competes for these four LEDs.
 			const int8_t shift = ModeShift();
-			const bool   mute  = (mode_ == Mode::Mute);
-			const uint8_t bits = mute ? muted_ : fxHeld_;
-
 			int8_t slot = 0;
 			for (int8_t i = 0; i < 4; i++)
 			{
-				if (i == shift) { LedBrightness(i, kLedGlow); continue; }
+				if (i == shift) { LedBrightness(i, ModeReminder()); continue; }
+				LedBrightness(i, (fxHeld_ & (1u << slot)) ? kLedFull : 0);
+				slot++;
+			}
+			break;
+		}
 
+		case Mode::Mute:
+		{
+			// Each group shows its HITS GOING PAST, on the button that toggles
+			// it — full brightness when the group is sounding, half when it is
+			// muted. Seeing a muted group still ticking is what lets you time
+			// bringing it back in; hiding it would leave three dark pads and
+			// no sense of the pattern underneath.
+			const int8_t shift = ModeShift();
+			int8_t slot = 0;
+			for (int8_t i = 0; i < 4; i++)
+			{
+				if (i == shift) { LedBrightness(i, ModeReminder()); continue; }
+
+				const bool muted = (muted_ & (1u << slot)) != 0;
 				uint16_t b = 0;
-				if (bits & (1u << slot)) b = mute ? kLedDim : kLedFull;
-				if (mute && ledFlash_[i] > 0) b = kLedFull;
+				if (groupFlash_[slot] > 0) b = muted ? kLedHalf : kLedFull;
 				LedBrightness(i, b);
 				slot++;
 			}
@@ -1138,10 +1123,16 @@ private:
 		}
 		}
 
-		// LED 4 is the beat, LED 5 is record — in every mode, so the two
+		// LED 5 is the CLICK, LED 4 is RECORD — in every mode, so the two
 		// things you need mid-performance never move.
-		LedBrightness(4, (playing_ && loop_.OnBeat()) ? kLedFull : kLedGlow);
-		LedOn(5, recording_);
+		//
+		// The click sits at half brightness rather than full: it runs
+		// constantly, and something that bright pulsing in the corner of your
+		// eye all night competes with the pads for attention it does not
+		// deserve. Record is the opposite — it is either happening or it is
+		// not, and you want to see that instantly, so it is full.
+		LedBrightness(5, (playing_ && loop_.OnBeat()) ? kLedHalf : 0);
+		LedBrightness(4, recording_ ? kLedFull : 0);
 	}
 
 	void __not_in_flash_func(LearnLeds)()
@@ -1268,8 +1259,6 @@ private:
 	/// down when the first learn begins — cannot abort it on the way out.
 	bool    abortLatched_ = true;
 	int32_t downTicks_    = 0;
-	int32_t modeFlash_   = 0;
-	int32_t actionFlash_ = 0;
 
 	// learn
 	int32_t    captured_[kNumLevels] = {};
@@ -1297,6 +1286,10 @@ private:
 	bool    pulse1Edge_ = false;
 
 	int32_t ledFlash_[4] = {};
+	/// Per mute-group hit flash, so Mute mode can show the pattern going past.
+	/// Set for every hit whether or not the group is audible — see
+	/// TriggerVoice().
+	int32_t groupFlash_[kNumMuteGroups] = {};
 };
 
 // ===========================================================================

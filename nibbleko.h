@@ -211,9 +211,11 @@ constexpr int32_t kHoldTicks = 2 * kCtrlRate;              // 2s
 /// deliberate nudge registers.
 constexpr int32_t kKnobMoveThresh = 64;
 
-/// How long a mode-change is announced on the LEDs before the display settles
-/// back to whatever the new mode shows.
-constexpr int32_t kModeFlashTicks = (kCtrlRate * 2) / 5;   // 400ms
+// There is no mode-change animation and no constant for one. An earlier
+// version flashed a per-mode pattern across LEDs 0-3 on every latch; it read
+// as noise rather than information. The current mode's SHIFT button pulses
+// instead (kLedQuarter, see main.cpp's ModeReminder), which says the same
+// thing continuously rather than only in the moment after you change it.
 
 /// Blink shifts, as `(timer >> shift) & 1`, against the 3kHz control rate.
 ///
@@ -263,5 +265,20 @@ constexpr int kNumLeds = 6;
 constexpr uint16_t kLedFull = 4095;
 constexpr uint16_t kLedDim  = 600;
 constexpr uint16_t kLedGlow = 200;
+
+/// Half brightness. Used where two states must be told apart at a glance
+/// rather than merely be visible: a muted group's hits against an audible
+/// one's, and the click on LED 5.
+///
+/// Not kLedFull/2 — the LEDs are driven by PWM against an eye whose response
+/// is closer to logarithmic, so half the duty cycle reads a good deal more
+/// than half as bright. 1200 of 4095 is about where "clearly dimmer, still
+/// obviously lit" sits; trim it on the bench if it reads wrong.
+constexpr uint16_t kLedHalf = 1200;
+
+/// The mode reminder: the shift button of the current mode pulses at this
+/// brightness, so the panel always says which mode you are in without
+/// spending an LED on it.
+constexpr uint16_t kLedQuarter = 500;
 
 } // namespace nko

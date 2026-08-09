@@ -192,6 +192,19 @@ constexpr int32_t kBootWindowSamples = kSampleRate / 2;    // 0.5s
 /// How long the boot splash announces the card is ready.
 constexpr int32_t kSplashSamples = kSampleRate;            // 1.0s
 
+/// Down for this long is a HOLD rather than a press.
+///
+/// Used for the one destructive gesture on the card: throwing away a
+/// calibration in progress and starting it again. It has to be FAR longer
+/// than the mode-select debounce (kSelectMinTicks, 50ms), because every
+/// ordinary mode-select is a brief press of the same switch -- at 50ms a tap
+/// aborted the calibration, which is exactly what it felt like on the bench:
+/// "as soon as I tap the switch I'm back at the start".
+///
+/// Two seconds, as NIBBLE used. Long enough that it cannot be reached by
+/// accident, short enough not to feel like the card has hung.
+constexpr int32_t kHoldTicks = 2 * kCtrlRate;              // 2s
+
 /// A knob must move at least this much (of 4095) to count as "being moved".
 /// Wide enough to ignore ADC dither on a still knob -- which would otherwise
 /// pin a "knob moving" display on permanently -- and narrow enough that a

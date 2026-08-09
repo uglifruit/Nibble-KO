@@ -376,18 +376,24 @@ private:
 				downTicks_   = 0;
 				actionFired_ = false;
 			}
-			if (downTicks_ < kSelectMinTicks) downTicks_++;
+			// Counts to the LONG threshold, not the select one. It used to
+			// saturate at kSelectMinTicks, which made the two gestures below
+			// indistinguishable — see the abort test.
+			if (downTicks_ < kHoldTicks) downTicks_++;
 
-			// Holding Down during a learn restarts it, which is the way out of
-			// a calibration that is going wrong.
+			// HOLDING Down during a learn throws it away and starts again.
 			//
-			// abortLatched_ makes this fire ONCE per press. Without it the
-			// abort re-fires on every tick the switch stays down — downTicks_
-			// saturates at the threshold, so the test keeps passing — and
-			// since an abort now RESTARTS the learn rather than leaving it,
-			// that would loop: restart, abort, restart, for as long as a
-			// finger rests on the switch.
-			if (ui_ == UiMode::Learn && downTicks_ >= kSelectMinTicks
+			// The threshold is kHoldTicks (2s), NOT kSelectMinTicks (50ms).
+			// At 50ms every tap aborted the calibration — reported from the
+			// bench as "as soon as I tap the momentary switch I'm back to the
+			// start". A tap is how you select a mode, so the abort has to be a
+			// gesture a tap cannot reach.
+			//
+			// abortLatched_ makes it fire ONCE per press. Without it the abort
+			// re-fires on every tick past the threshold, and since an abort
+			// RESTARTS the learn that would loop: restart, abort, restart, for
+			// as long as a finger rests on the switch.
+			if (ui_ == UiMode::Learn && downTicks_ >= kHoldTicks
 			 && !abortLatched_)
 			{
 				abortLatched_ = true;
@@ -400,6 +406,14 @@ private:
 
 		if (!selectArmed_) return;
 		selectArmed_ = false;
+
+		// The switch selects nothing during a calibration. Its only job there
+		// is the hold-to-restart above, and the buttons belong to the learn.
+		// Without this, releasing the switch mid-learn would quietly latch a
+		// mode from whichever combo the current learn STEP happens to be
+		// sitting on — so the mode you came out in was decided by where the
+		// calibration got to, which is not a decision anyone made.
+		if (ui_ == UiMode::Learn) return;
 
 		// Too brief to be meant, or a pair already consumed this gesture.
 		if (downTicks_ < kSelectMinTicks || actionFired_) return;

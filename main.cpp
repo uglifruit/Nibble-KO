@@ -28,6 +28,19 @@
 //   switch+C  FX1     audio effects
 //   switch+D  FX2     timing effects
 //
+// Inside a mode, THE MODE'S OWN BUTTON IS THE SHIFT — the same hold-and-tap
+// mechanic the kit is played with, so the whole card is one gesture:
+//
+//   MUTE   hold B, tap A / C / D     toggle mute group 1 / 2 / 3
+//   FX1    hold C, hold A / B / D    effect 1 / 2 / 3, while held
+//   FX2    hold D, hold A / B / C    effect 4 / 5 / 6, while held
+//
+// A bare press does nothing in these modes. That is not a restriction, it is
+// the only thing that WORKS: to press A twice you must pass back through the
+// rest voltage, so a bare-press toggle can mute a group and never unmute it.
+// Holding the shift makes each tap a pair, and the ghost rule silences the
+// release back onto the shift — so tap-tap-tap toggles as often as you like.
+//
 //   switch+AB  enter the USB/browser setup
 //   switch+AC  UNDO           switch+AD  QUANTISE
 //   switch+CD  PLAY/STOP
@@ -509,8 +522,9 @@ private:
 		{
 		case Mode::Drums:  DrumsPress(combo); break;
 		case Mode::Mute:   MutePress(combo);  break;
+		// FX are momentary and read as state in FxUpdate(), not on this edge.
 		case Mode::Fx1:
-		case Mode::Fx2:    FxPress(combo);    break;
+		case Mode::Fx2:
 		case Mode::WebUi:
 		default:                              break;
 		}
@@ -593,28 +607,99 @@ private:
 
 	void __not_in_flash_func(MutePress)(int8_t combo)
 	{
-		// Toggle, not momentary: a mute group stays where you put it. Only the
-		// three singles A/B/C are groups; D and every pair are reserved.
-		if (combo >= kNumMuteGroups) return;
-		muted_ ^= static_cast<uint8_t>(1u << combo);
+		// HOLD B, TAP A/C/D. The mode's own button is the shift.
+		//
+		// A bare press cannot work here, and the reason is the same one that
+		// makes the singles shifts in DRUMS: to press A twice you must pass
+		// back through the rest voltage, so a bare-press toggle can mute a
+		// group but can never UNMUTE it — the second press is unreachable.
+		// Reported from the bench exactly that way.
+		//
+		// Holding the shift makes each tap a PAIR, which is a fresh trigger
+		// every time (the ghost rule silences the release back onto the shift,
+		// so tap-tap-tap on one group toggles it as many times as you like).
+		if (combo < kNumSingles) return;         // bare press: nothing
+
+		int8_t slot = SlotForShiftedTap(combo, kB);
+		if (slot < 0) return;
+
+		muted_ ^= static_cast<uint8_t>(1u << slot);
 		FlashCombo(combo);
 
 		// TODO(step 3): record the toggle as a kActionEvent when recording_.
 	}
 
+	/// Which 0..2 slot a "hold `shift`, tap the other one" gesture names.
+	///
+	/// The three usable taps are the singles OTHER than the shift, in panel
+	/// order — so in Mute mode (shift B) A/C/D are groups 0/1/2, and in FX
+	/// bank 1 (shift C) A/B/D are effects 0/1/2. Returns -1 if `combo` is not
+	/// a pair containing `shift`, or if the shift is not actually held.
+	///
+	/// Deliberately derived from the shift rather than tabulated: the mapping
+	/// is "the remaining buttons, in order", and writing that as data would
+	/// need a table per mode that could drift out of step with the mode list.
+	int8_t SlotForShiftedTap(int8_t combo, int8_t shift) const
+	{
+		if (combo < kNumSingles || combo >= kNumLevels) return -1;
+
+		// The gesture is only this one if the shift really was the held
+		// button. LevelTracker::Shift() is what recovers that — the voltage
+		// for B+A is identical whichever went down first.
+		if (levels_.Shift() != shift) return -1;
+
+		int8_t tap = OtherMember(combo, shift);
+		if (tap < 0) return -1;
+
+		// Rank the tap among the three non-shift singles, in panel order.
+		int8_t slot = 0;
+		for (int8_t i = 0; i < kNumSingles; i++)
+		{
+			if (i == shift) continue;
+			if (i == tap)   return slot;
+			slot++;
+		}
+		return -1;
+	}
+
+	/// The shift button for the current mode: the one that selected it.
+	int8_t ModeShift() const
+	{
+		switch (mode_)
+		{
+		case Mode::Mute: return kB;
+		case Mode::Fx1:  return kC;
+		case Mode::Fx2:  return kD;
+		default:         return kComboNone;
+		}
+	}
+
 	// --- FX -------------------------------------------------------------
 
-	void __not_in_flash_func(FxPress)(int8_t combo)
-	{
-		if (combo >= kNumFxPerBank) return;
-		fxHeld_ |= static_cast<uint8_t>(1u << combo);
-		FlashCombo(combo);
+	// Effects are MOMENTARY — held, not toggled — so unlike mutes they are not
+	// driven from the trigger edge at all. FxUpdate() below reads the held
+	// state every control tick. Nothing to do on a press.
+	//
+	// TODO(step 5/6): actually apply the effect. Bank 2 (timing:
+	// flam/stutter/triplet) acts on the loop's firing; bank 1 (audio:
+	// reverse/tape-stop/pitch) needs the PCM backend that drums.h still lists
+	// as TODO. Until then this only lights the LED, which is enough to test
+	// the gesture routing on hardware.
 
-		// TODO(step 5/6): actually apply the effect. Bank 2 (timing:
-		// flam/stutter/triplet) acts on the loop's firing; bank 1 (audio:
-		// reverse/tape-stop/pitch) needs the PCM backend that drums.h still
-		// lists as TODO. Until then this only lights the LED, which is enough
-		// to test the gesture routing on hardware.
+	/// Which effect is held right now, as a bit per slot. Control rate.
+	void __not_in_flash_func(FxUpdate)()
+	{
+		fxHeld_ = 0;
+
+		// Not while the switch is down — those presses are choosing a mode.
+		if (selectArmed_) return;
+
+		// Sounding(), not Current(): while a ghost is armed the CV has fallen
+		// back onto the shift, but the PAIR is what is still in force. Using
+		// Current() would drop the effect the instant the tapping finger
+		// lifted even though the shift was still held.
+		int8_t slot = SlotForShiftedTap(levels_.Sounding(), ModeShift());
+		if (slot >= 0) fxHeld_ = static_cast<uint8_t>(1u << slot);
 	}
 
 	// --- shared control -------------------------------------------------
@@ -632,19 +717,10 @@ private:
 		}
 		recording_ = nowRecording;
 
-		// FX are momentary: an effect is only held while its button is. The
-		// level detector reports the combo the CV is sitting on, so a released
-		// button shows up as the CV leaving that level.
-		//
-		// Not while the switch is down, though — those presses are choosing a
-		// mode, and reading them here would fire effects (and light their
-		// LEDs) from the gesture used to leave the mode.
-		if ((mode_ == Mode::Fx1 || mode_ == Mode::Fx2) && !selectArmed_)
-		{
-			int8_t cur = levels_.Current();
-			fxHeld_ = (cur >= 0 && cur < kNumFxPerBank)
-			        ? static_cast<uint8_t>(1u << cur) : 0;
-		}
+		// FX are momentary: an effect lasts exactly as long as its button is
+		// held, so it is read as STATE every tick rather than latched on an
+		// edge.
+		if (mode_ == Mode::Fx1 || mode_ == Mode::Fx2) FxUpdate();
 
 		loop_.SetTempo(KnobVal(Knob::X));
 
@@ -1007,23 +1083,34 @@ private:
 		switch (mode_)
 		{
 		case Mode::Mute:
-			// Dim = muted, off = audible. The three groups sit on their own
-			// pads; the fourth is dark because it is not a group.
-			for (int i = 0; i < 4; i++)
-			{
-				uint16_t b = 0;
-				if (i < kNumMuteGroups && (muted_ & (1u << i))) b = kLedDim;
-				if (ledFlash_[i] > 0) b = kLedFull;
-				LedBrightness(i, b);
-			}
-			break;
-
 		case Mode::Fx1:
 		case Mode::Fx2:
-			// Lit = that effect is held.
-			for (int i = 0; i < 4; i++)
-				LedBrightness(i, (fxHeld_ & (1u << i)) ? kLedFull : 0);
+		{
+			// Each slot is shown on the BUTTON THAT PLAYS IT, which is not the
+			// slot's own index: the shift button is skipped, so in Mute mode
+			// (shift B) groups 0/1/2 live on A/C/D. Showing them at 0/1/2
+			// would light B — the shift, which is not a group at all — and
+			// leave D dark.
+			//
+			// The shift button itself glows dim, as a reminder of which button
+			// to hold.
+			const int8_t shift = ModeShift();
+			const bool   mute  = (mode_ == Mode::Mute);
+			const uint8_t bits = mute ? muted_ : fxHeld_;
+
+			int8_t slot = 0;
+			for (int8_t i = 0; i < 4; i++)
+			{
+				if (i == shift) { LedBrightness(i, kLedGlow); continue; }
+
+				uint16_t b = 0;
+				if (bits & (1u << slot)) b = mute ? kLedDim : kLedFull;
+				if (mute && ledFlash_[i] > 0) b = kLedFull;
+				LedBrightness(i, b);
+				slot++;
+			}
 			break;
+		}
 
 		case Mode::WebUi:
 			// TODO(webui): show WebUI::stage as a binary count here.

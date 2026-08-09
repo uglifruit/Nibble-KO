@@ -62,8 +62,11 @@
 //   Pulse Out 1  gate on every hit        Pulse Out 2  click, one per beat
 //   CV Out 1/2   unassigned for now
 //
-// Calibration is the ALT-BOOT mode: hold the switch down at power-on. The
-// learned levels are saved to flash and reloaded on every normal boot.
+// Calibration is meant to be the ALT-BOOT mode — hold the switch down at
+// power-on — with the learned levels saved to flash and reloaded on every
+// normal boot. THAT IS NOT WHAT THIS BUILD DOES: the flash side does not
+// exist yet, so EVERY boot calibrates and then exits into DRUMS. See the
+// splash handler in ProcessSample(), and TODO(calibstore) in LearnTick().
 //
 // ---------------------------------------------------------------------------
 // SINGLE CORE, FOR NOW
@@ -253,19 +256,28 @@ public:
 			{
 				for (int i = 0; i < kNumLeds; i++) LedOff(i);
 
-				// Alt-boot goes to calibration. A normal boot does NOT — the
-				// levels are restored from flash, which is the whole point of
-				// persisting them.
+				// EVERY boot calibrates, for now.
 				//
-				// TODO(calibstore): load the saved table here. Until that
-				// exists, a normal boot plays on the evenly-spaced default,
-				// which is enough to test the gesture machine on hardware.
-				if (calibrateBoot_) EnterLearn();
+				// The intended design is that only the ALT-boot calibrates and
+				// a normal boot restores the saved levels from flash — that is
+				// the whole point of persisting them. But the flash side does
+				// not exist yet (see TODO(calibstore) in LearnTick), so a
+				// normal boot would come up on the evenly-spaced DEFAULT
+				// spread, which is not a real calibration and cannot be played
+				// reliably enough to test anything else.
+				//
+				// So both paths run the learn until calibstore lands. The
+				// alt-boot latch is still read and still displayed on the
+				// splash, so the gesture stays exercised and this becomes a
+				// one-line change later rather than a re-think.
+				EnterLearn();
 
-				// The switch was held Down through the boot window to get
-				// here, and its release is still to come. Swallow it, or that
-				// release reads as a mode-select gesture the moment the splash
-				// clears.
+				// The switch may still be held Down from an alt-boot, with its
+				// release still to come. Swallow that: otherwise the release
+				// reads as a mode-select gesture the moment the splash clears,
+				// and the hold itself would abort the learn it just started.
+				// abortLatched_ starts true and is only cleared by a release,
+				// which is what makes the second half safe.
 				selectArmed_ = false;
 				downTicks_   = 0;
 			}
@@ -366,12 +378,25 @@ private:
 			}
 			if (downTicks_ < kSelectMinTicks) downTicks_++;
 
-			// Holding Down during a learn aborts it, which is the only way out
-			// of a calibration that is going wrong.
-			if (ui_ == UiMode::Learn && downTicks_ >= kSelectMinTicks)
+			// Holding Down during a learn restarts it, which is the way out of
+			// a calibration that is going wrong.
+			//
+			// abortLatched_ makes this fire ONCE per press. Without it the
+			// abort re-fires on every tick the switch stays down — downTicks_
+			// saturates at the threshold, so the test keeps passing — and
+			// since an abort now RESTARTS the learn rather than leaving it,
+			// that would loop: restart, abort, restart, for as long as a
+			// finger rests on the switch.
+			if (ui_ == UiMode::Learn && downTicks_ >= kSelectMinTicks
+			 && !abortLatched_)
+			{
+				abortLatched_ = true;
 				AbortLearn();
+			}
 			return;
 		}
+
+		abortLatched_ = false;
 
 		if (!selectArmed_) return;
 		selectArmed_ = false;
@@ -647,14 +672,14 @@ private:
 		toneLane_.Forget();
 	}
 
-	/// Discard the learn and keep whatever calibration was there before.
+	/// Throw away the captures and start the learn again.
 	///
-	/// Note this stays in UiMode::Learn until the flash has played out, and
-	/// only then returns to Play. Setting ui_ = Play here instead looks
-	/// equivalent and is not: UiTick() would immediately take its Play branch,
-	/// LearnLeds() would never render the Aborted phase, and the "your learn
-	/// was thrown away" flash — the only feedback that the abort worked —
-	/// would be dead code that never lit an LED.
+	/// This only ANNOUNCES the abort; LearnTick() calls EnterLearn() once the
+	/// flash has played out. Restarting here directly would skip the flash
+	/// entirely, and that flash is the only feedback that the gesture worked.
+	///
+	/// (It restarts rather than exiting because there is nowhere useful to
+	/// exit to while every boot must calibrate — see LearnTick.)
 	void AbortLearn()
 	{
 		if (learnPhase_ == LearnPhase::Aborted) return;
@@ -672,16 +697,31 @@ private:
 		{
 			if (--phaseTimer_ == 0 && learnPhase_ != LearnPhase::Waiting)
 			{
-				// Done, Failed and Aborted all END the learn; Confirm and
+				// Only a SUCCESSFUL learn leaves calibration. Confirm and
 				// Collision are per-step feedback and fall back to waiting.
-				if (learnPhase_ == LearnPhase::Done
-				 || learnPhase_ == LearnPhase::Failed
-				 || learnPhase_ == LearnPhase::Aborted)
+				//
+				// Failed and Aborted RESTART the learn rather than exiting,
+				// which they did until the levels stopped being restorable
+				// from flash. Exiting drops the card on the evenly-spaced
+				// default, and that spread cannot actually be played — so
+				// there is nothing useful to abort TO, and a mistimed switch
+				// hold would cost a power cycle to undo. Starting over is the
+				// only sensible destination while every boot must calibrate.
+				//
+				// TODO(calibstore): when saved levels exist, these two should
+				// go back to exiting — aborting will then mean "keep the
+				// calibration I already had", which is a real choice.
+				if (learnPhase_ == LearnPhase::Done)
 				{
 					// Drop whatever combo the learn left "held", or the first
 					// real press could match it and be swallowed as no-change.
 					levels_.ResetHeld();
 					ui_ = UiMode::Play;
+				}
+				else if (learnPhase_ == LearnPhase::Failed
+				      || learnPhase_ == LearnPhase::Aborted)
+				{
+					EnterLearn();
 				}
 				else
 				{
@@ -1074,9 +1114,12 @@ private:
 	bool     calibrateBoot_ = false;
 
 	// mode select
-	bool    selectArmed_ = false;   ///< switch is Down, a selection is pending
-	bool    actionFired_ = false;   ///< a pair already consumed this gesture
-	int32_t downTicks_   = 0;
+	bool    selectArmed_  = false;  ///< switch is Down, a selection is pending
+	bool    actionFired_  = false;  ///< a pair already consumed this gesture
+	/// One abort per press. Starts TRUE so the alt-boot hold — which is still
+	/// down when the first learn begins — cannot abort it on the way out.
+	bool    abortLatched_ = true;
+	int32_t downTicks_    = 0;
 	int32_t modeFlash_   = 0;
 	int32_t actionFlash_ = 0;
 

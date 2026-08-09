@@ -116,13 +116,20 @@ pair press is always a genuine transition. See `main.cpp`'s header.
 
 Roughly in dependency order:
 
-1. **Calibration is not persisted.** The learn machine runs and installs its
-   result, but `LearnTick()`'s success branch has a `TODO(calibstore)` where
-   the flash write belongs, and boot does not load anything back. Until that
-   exists the card recalibrates on every alt-boot and plays on the default
-   spread otherwise — i.e. it behaves like NIBBLE, which is not the design.
+1. **Calibration is not persisted**, and two things in this build are
+   temporary scaffolding around that gap — both marked `TODO(calibstore)`:
+   - **Every boot calibrates**, not just the alt-boot. The intended design is
+     alt-boot-only with normal boot restoring the saved levels; without the
+     flash side, a normal boot would come up on the evenly-spaced *default*
+     spread, which is not a real calibration and cannot be played.
+   - **Abort and timeout RESTART the learn** instead of exiting, because
+     exiting would land on that same unplayable default. Once levels can be
+     restored, aborting should go back to meaning "keep what I had".
+
    Needs a small `calibstore.h` (sibling to `samplestore.h`, own 4KB sector)
-   and the five-step flash protocol from `docs/LESSONS.md`.
+   and the five-step flash protocol from `docs/LESSONS.md`. This is the
+   highest-value next task — it is what turns the card from "recalibrate
+   every time you power it on" into the design that was actually agreed.
 2. **Undo/Quantise do nothing.** The gestures are wired and dispatch to
    `FireAction()`; `Looper` still needs `Snapshot()`, `Undo()` and
    `QuantiseNow()`, plus a runtime-settable quantise grid.

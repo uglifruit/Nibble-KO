@@ -1,0 +1,25 @@
+# Build artifacts
+build/
+build-*/
+
+# Local .uf2 builds, kept out of the repo. A RELEASED binary would live in
+# UF2/ and be committed; this directory is just the one you drag onto the
+# Pico. Empty for now - there is nothing to build yet.
+FLASHME/*.uf2
+
+# Baked-in samples: raw audio + the generated header. A fresh clone must
+# still compile with none of this present (see samples_default.h) - same
+# convention as WorkshopBio.
+samples/*.raw
+samples/incoming/
+samples.h
+
+# Editor / OS noise
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.pyc

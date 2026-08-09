@@ -68,6 +68,15 @@
 // exist yet, so EVERY boot calibrates and then exits into DRUMS. See the
 // splash handler in ProcessSample(), and TODO(calibstore) in LearnTick().
 //
+// DURING a calibration the switch has a different job, as it does in NIBBLE:
+//
+//   tap        capture the voltage of the combo you are holding
+//   hold 2s    throw this calibration away and start it again
+//
+// Capture is a TAP rather than the button press itself because the press and
+// the voltage arriving are the same event — the settle detector cannot have
+// trusted the reading yet. Holding the combo and tapping separates the two.
+//
 // ---------------------------------------------------------------------------
 // SINGLE CORE, FOR NOW
 // ---------------------------------------------------------------------------
@@ -367,6 +376,7 @@ private:
 	void __not_in_flash_func(ReadSwitch)()
 	{
 		Switch sw = SwitchVal();
+		tapped_ = false;
 
 		if (sw == Switch::Down)
 		{
@@ -407,13 +417,26 @@ private:
 		if (!selectArmed_) return;
 		selectArmed_ = false;
 
-		// The switch selects nothing during a calibration. Its only job there
-		// is the hold-to-restart above, and the buttons belong to the learn.
-		// Without this, releasing the switch mid-learn would quietly latch a
-		// mode from whichever combo the current learn STEP happens to be
-		// sitting on — so the mode you came out in was decided by where the
-		// calibration got to, which is not a decision anyone made.
-		if (ui_ == UiMode::Learn) return;
+		// A TAP is a press released before the hold threshold. Firing it here,
+		// on release, rather than on the way down is what keeps tap and hold
+		// distinguishable on one control: beginning a 2s hold would otherwise
+		// fire a capture on its way past, so every restart would also stamp a
+		// spurious level into the table it was about to throw away.
+		bool wasTap = (downTicks_ < kHoldTicks);
+
+		if (ui_ == UiMode::Learn)
+		{
+			// In calibration the switch is the CAPTURE control: tap to store
+			// the voltage of the combo being held. LearnTick consumes this.
+			tapped_ = wasTap;
+			return;
+		}
+
+		// Outside calibration the switch selects a mode. It never selects
+		// anything during a learn — without the branch above, releasing the
+		// switch mid-learn would quietly latch a mode from whichever combo the
+		// current learn STEP was sitting on, so the mode you came out in was
+		// decided by where the calibration got to.
 
 		// Too brief to be meant, or a pair already consumed this gesture.
 		if (downTicks_ < kSelectMinTicks || actionFired_) return;
@@ -748,13 +771,23 @@ private:
 
 		if (--learnTimer_ <= 0) { AbortLearn(); return; }
 
-		// A capture is confirmed by PRESSING the combination being asked for,
-		// not by a separate control: the switch is the abort gesture now, so
-		// it cannot also be the capture gesture.
-		if (ev != LevelEvent::Trigger) return;
-		if (idx != static_cast<int8_t>(kLearnOrder[learnStep_])) return;
+		// A capture is confirmed by TAPPING THE SWITCH while holding the
+		// combination, as NIBBLE does.
+		//
+		// This build briefly tried to capture on the button press itself, to
+		// leave the switch free — and that cannot work, because the press and
+		// the voltage arriving are the SAME event. The settle detector has by
+		// definition not had time to trust the reading yet, so every capture
+		// either raced the slew or was rejected as unsettled.
+		//
+		// Holding the combo and then tapping separates the two: you hold, the
+		// voltage settles, and the tap says "now". That is the whole reason
+		// NIBBLE's calibration works this way.
+		if (!tapped_) return;
+		(void)ev;
+		(void)idx;
 
-		// A press that arrived mid-transition would capture a voltage the
+		// A tap that arrived mid-transition would capture a voltage the
 		// player is not actually holding. Reject it and say so, rather than
 		// silently recording a number from the middle of a slew.
 		if (!levels_.Settled())
@@ -1083,7 +1116,8 @@ private:
 			break;
 		}
 
-		// Waiting for the player to press the combination being asked for.
+		// Waiting for the player to HOLD the combination being asked for and
+		// tap the switch to confirm it.
 		uint8_t want  = ComboLedMask(static_cast<int8_t>(kLearnOrder[learnStep_]));
 		bool    blink = ((uiTicks_ >> kBlinkFast) & 1) != 0;
 
@@ -1130,6 +1164,9 @@ private:
 	// mode select
 	bool    selectArmed_  = false;  ///< switch is Down, a selection is pending
 	bool    actionFired_  = false;  ///< a pair already consumed this gesture
+	/// Set for ONE control tick when a short press is released. The capture
+	/// gesture during calibration; unused elsewhere.
+	bool    tapped_       = false;
 	/// One abort per press. Starts TRUE so the alt-boot hold — which is still
 	/// down when the first learn begins — cannot abort it on the way out.
 	bool    abortLatched_ = true;

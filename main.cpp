@@ -701,11 +701,23 @@ private:
 		// Not while the switch is down — those presses are choosing a mode.
 		if (selectArmed_) return;
 
-		// Sounding(), not Current(): while a ghost is armed the CV has fallen
-		// back onto the shift, but the PAIR is what is still in force. Using
-		// Current() would drop the effect the instant the tapping finger
-		// lifted even though the shift was still held.
-		int8_t slot = SlotForShiftedTap(levels_.Sounding(), ModeShift());
+		// CURRENT(), not Sounding(). This is the whole difference between an
+		// effect and a hit, and getting it wrong broke two things at once.
+		//
+		// Sounding() reports the PAIR for as long as the ghost is armed — that
+		// is, for as long as the CV sits on the shift after the tapping finger
+		// has lifted. That is right for a drum, where the pair named a hit
+		// that is still ringing. It is exactly wrong for an effect, which must
+		// stop when you let go: the effect stayed latched after release, and
+		// re-tapping the same button produced no new trigger to relatch it,
+		// which is why bank C never registered D at all (release D, ghost back
+		// to C, Sounding() still says CD, nothing ever changes).
+		//
+		// Current() follows the voltage itself, so the pair is reported only
+		// while both buttons are genuinely down. Release the tap and it falls
+		// to the bare shift, the slot lookup fails, and the effect ends —
+		// which is the behaviour asked for.
+		int8_t slot = SlotForShiftedTap(levels_.Current(), ModeShift());
 		if (slot >= 0) fxHeld_ = static_cast<uint8_t>(1u << slot);
 	}
 

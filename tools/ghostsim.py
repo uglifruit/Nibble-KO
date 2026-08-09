@@ -625,6 +625,39 @@ def test_shift_cleared_on_bare_single():
     check("drums: shift cleared on a bare single", t.shift, -1)
 
 
+def test_fx_hold_release():
+    """A MOMENTARY effect must read Current(), never Sounding().
+
+    NIBBLE-KO's FX modes hold one button as a shift and a second as the effect,
+    which lasts exactly as long as that second button is down. Both readings
+    agree while it is held; they disagree on RELEASE, and that is the whole
+    bug this pins down:
+
+      Sounding() reports the PAIR for as long as the ghost is armed - i.e.
+      after the tapping finger has lifted. Right for a drum, whose hit is
+      still ringing. Wrong for an effect, which must stop.
+
+    It cost two symptoms at once on the bench. The effect stayed latched after
+    release, AND the same button could not be re-triggered: releasing D left
+    Sounding() reporting CD forever, so pressing D again changed nothing and
+    bank C appeared never to register D at all.
+    """
+    lv = spaced_levels()
+    t = LevelTracker(); t.learn_from(lv)
+    hw = FourVoltages(lv)
+    prime(t, hw, 2)                 # hold C, the bank-1 shift
+
+    for tap, pair, name in ((0, 5, "A"), (1, 7, "B"), (3, 9, "D")):
+        play(t, hw, [pair])         # press the tap while C is held
+        check("fx: hold C + %s reads the pair" % name, t.current, pair)
+        check("fx: hold C + %s keeps the shift" % name, t.shift, 2)
+
+        play(t, hw, [2])            # release the tap, C still down
+        # Current() falls back to the bare shift, so the effect ends. This is
+        # the assertion that fails if anyone switches this to Sounding().
+        check("fx: releasing %s ends the effect" % name, t.current, 2)
+
+
 def test_learn_collision_detected():
     """A squashed knob position must be REPORTED, and the learn must still
     complete. Degrading to a warning beats stalling on the combo it cannot
@@ -663,6 +696,7 @@ def main():
     test_no_directional_bias()
     test_ordered_pairs_distinguished()
     test_shift_cleared_on_bare_single()
+    test_fx_hold_release()
     test_learn_roundtrip()
     test_learn_collision_detected()
     print()

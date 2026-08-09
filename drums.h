@@ -119,29 +119,11 @@ static inline int8_t VoiceForGesture(int8_t shift, int8_t tap)
 	return kGestureVoice[shift][tap];
 }
 
-/// Semitone offsets for the four SINGLE buttons, sent out CV Out 1 in DRUMS.
-///
-/// The singles make no sound — they are shifts — so their CV output was going
-/// spare. Giving them four pitches costs nothing and means that once a pattern
-/// is looping you can play a simple bassline over it with the same four
-/// buttons, without a second card or a mode switch.
-///
-///   A =  0   root
-///   B = -2   a tone below, so the line can fall as well as rise
-///   C = +7   the fifth
-///   D = +12  the octave
-///
-/// A bonus, explicitly not the feature: no combos, no scale, no quantiser.
-/// Four notes that happen to sit well together.
-constexpr int8_t kBassSemis[kNumSingles] = { 0, -2, 7, 12 };
-
-/// The bass line's root, in semitones above 0V.
-///
-/// One octave up rather than zero, because B is a TONE BELOW the root and the
-/// CV output cannot usefully go negative — at a 0V root that note would be
-/// -167mV, which most oscillators simply ignore. At 1V all four land between
-/// 0.83V and 2V, which is bass register on a normally-tuned oscillator.
-constexpr int kBassRoot = 12;
+// NIBBLE put a four-note BASSLINE on the singles here, using CV Out 1 --
+// the singles are shifts and make no sound, so the output was going spare.
+// NIBBLE-KO deliberately drops it: this card is percussion, and the singles
+// have a bigger job now (they are mode selectors under the switch). CV Out 1
+// and 2 are unassigned for the moment; see the plan's open questions.
 
 /// Fractional headroom in the drum envelope accumulators.
 ///

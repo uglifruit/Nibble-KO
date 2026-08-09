@@ -120,6 +120,62 @@ static inline uint8_t ComboLedMask(int8_t combo)
 }
 
 // ---------------------------------------------------------------------------
+// Modes
+// ---------------------------------------------------------------------------
+
+/// What the four buttons currently do.
+///
+/// The mode is LATCHED: it is chosen with the switch held Down (see main.cpp's
+/// gesture reader) and then persists while the switch sits at Middle (play) or
+/// Up (play and record). That latching is what lets every mode be recorded
+/// through one mechanism -- Down and Up never need to be held at once.
+enum class Mode : uint8_t {
+	Drums   = 0,   ///< the kit, played as NIBBLE's DRUMS. Power-on default.
+	Mute    = 1,   ///< three mute-group toggles
+	Fx1     = 2,   ///< audio effects: reverse / tape-stop / pitch
+	Fx2     = 3,   ///< timing effects: flam / stutter / triplet
+	WebUi   = 4,   ///< USB/browser setup. A doorway, not a performance mode.
+	kNumModes = 5
+};
+
+/// Which mode each SINGLE selects while the switch is held Down. Indexed by
+/// combo (kA..kD), so the table reads in panel order.
+constexpr Mode kModeForSingle[kNumSingles] = {
+	Mode::Drums,   // A
+	Mode::Mute,    // B
+	Mode::Fx1,     // C
+	Mode::Fx2,     // D
+};
+
+/// The one-shot actions reached by switch+PAIR. Not modes: they fire and
+/// leave the latched mode alone.
+enum class Action : uint8_t {
+	None = 0,
+	EnterWebUi,   ///< AB
+	Undo,         ///< AC
+	Quantise,     ///< AD
+	PlayStop,     ///< CD
+};
+
+/// Which action each PAIR fires, indexed by (combo - kNumSingles) so it lines
+/// up with kPairMembers.
+constexpr Action kActionForPair[kNumPairs] = {
+	Action::EnterWebUi,   // AB
+	Action::Undo,         // AC
+	Action::Quantise,     // AD
+	Action::None,         // BC  (reserved)
+	Action::None,         // BD  (reserved)
+	Action::PlayStop,     // CD
+};
+
+/// How many mute groups there are. Three, not four -- the fourth button is
+/// reserved in Mute mode.
+constexpr int kNumMuteGroups = 3;
+
+/// How many effects live in each bank. Three, same reasoning.
+constexpr int kNumFxPerBank = 3;
+
+// ---------------------------------------------------------------------------
 // Switch gestures
 // ---------------------------------------------------------------------------
 
@@ -136,21 +192,31 @@ constexpr int32_t kBootWindowSamples = kSampleRate / 2;    // 0.5s
 /// How long the boot splash announces the card is ready.
 constexpr int32_t kSplashSamples = kSampleRate;            // 1.0s
 
-/// Down for this long is a HOLD; released before it is a TAP.
-///
-/// The momentary switch carries four actions:
-///   Play  + tap  -> retrigger the current voice
-///   Play  + hold -> enter learn
-///   Learn + tap  -> capture this step
-///   Learn + hold -> abort learn
-/// One detector, four dispatches. See main.cpp.
-constexpr int32_t kHoldTicks = 2 * kCtrlRate;              // 2s
-
 /// A knob must move at least this much (of 4095) to count as "being moved".
 /// Wide enough to ignore ADC dither on a still knob -- which would otherwise
 /// pin a "knob moving" display on permanently -- and narrow enough that a
 /// deliberate nudge registers.
 constexpr int32_t kKnobMoveThresh = 64;
+
+/// How long a mode-change is announced on the LEDs before the display settles
+/// back to whatever the new mode shows.
+constexpr int32_t kModeFlashTicks = (kCtrlRate * 2) / 5;   // 400ms
+
+/// Blink shifts, as `(timer >> shift) & 1`, against the 3kHz control rate.
+///
+/// These MUST be checked against the rate the timer actually ticks at. A shift
+/// of 5 gives 47Hz, well above flicker fusion, so it reads as a dim steady glow
+/// rather than a blink -- every calibration alert in NIBBLE was written at
+/// shift 4, 5 or 6 and was therefore INVISIBLE, reported from the bench as
+/// "the alerts aren't happening".
+///
+///   >>7 = 11.7Hz   urgent but countable
+///   >>8 =  5.9Hz   a clear warning blink
+///   >>9 =  2.9Hz   slow and deliberate
+///
+/// Anything below >>7 at this tick rate is not a blink.
+constexpr int kBlinkFast = 7;    ///< ~12Hz, for "something is wrong"
+constexpr int kBlinkSlow = 8;    ///< ~6Hz, for a countable warning
 
 // ---------------------------------------------------------------------------
 // Pitch (DRUMS bassline CV out — see drums.h kBassSemis)

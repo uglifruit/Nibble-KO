@@ -11,21 +11,21 @@ where every voice is independently synthesised or sample-based, chosen and
 uploaded from a browser WebUI — the sample-management pattern from
 `../WorkshopBio`.
 
-## Current status: SCAFFOLD, NOT YET BUILDABLE
+## Current status: BUILDS, UNTESTED ON HARDWARE
 
-There is no `main.cpp` and the project does not compile to a UF2 yet.
-What exists is ported/adapted logic, individually verified where a verifier
-exists, waiting for a design session to turn it into a working card. See
-"What's here" and "What's not here" below before doing anything else.
+`main.cpp` exists and the card compiles to `build/nibbleko.uf2` (4.8% flash,
+9.4% RAM). The mode machine, the Drum Performance path and the calibration
+learn machine are written; the sample backend, the effects DSP and the WebUI
+are not. **Nothing here has touched a Workshop Computer yet** — see "What
+works, on paper" below, and treat every ergonomic claim as unverified.
 
 ## Build
 
 Toolchain comes from the Pico VS Code extension install at `~/.pico-sdk/`.
 `CMakeLists.txt` includes `~/.pico-sdk/cmake/pico-vscode.cmake`, which pins
-SDK 2.2.0 / GCC 14_2_Rel1 / picotool 2.2.0-a4. The `add_executable(...)` block
-is commented out until `main.cpp` exists — see that file's TODO comment.
+SDK 2.2.0 / GCC 14_2_Rel1 / picotool 2.2.0-a4.
 
-From PowerShell, once there is a `main.cpp` to build:
+From PowerShell:
 
 ```powershell
 $env:PICO_SDK_PATH = "$env:USERPROFILE\.pico-sdk\sdk\2.2.0"
@@ -34,6 +34,7 @@ cmake -B build -G Ninja
 cmake --build build
 ```
 
+Output: `build/nibbleko.uf2`. Copy to `FLASHME/` for flashing (git-ignored).
 `cmake`/`ninja` are **not** on the default PATH — always set it as above.
 
 ## Hard rules
@@ -83,35 +84,79 @@ Ported and adapted from `../WoskshopButtons` (NIBBLE) and `../WorkshopBio`
 | `tools/checksize.cmake`, `tools/bin2h.py` | Ported unchanged | WorkshopBio |
 | `tools/ghostsim.py`, `loopsim.py`, `dspsim.py`, `syntax.sh`, `checkyaml.py`, `kittable.py`, `crosscheck.py` | Ported unchanged | NIBBLE — all pass against the ported `.cpp` files (see Verifying changes) |
 | `ComputerCard.h`, `pico_sdk_import.cmake` | Vendored, byte-identical | NIBBLE — **do not edit** |
-| `CMakeLists.txt` | Written new, mostly commented out | Sample-baking step wired; `add_executable` waits on `main.cpp` |
-| `info.yaml` | Written new | `draft: true`, `Status: In development`, no UF2 |
+| `main.cpp` | Written new | The mode machine, Drum Performance, LEDs, calibration. Structure follows NIBBLE's `main.cpp` closely |
+| `CMakeLists.txt` | Written new | Builds; `webui.cpp` deliberately excluded until it is real |
+| `info.yaml` | Written new | `draft: true`, `Status: In development` |
+
+## The control surface
+
+The switch is a **mode selector**, not a trigger — this is the single biggest
+departure from NIBBLE, and `main.cpp`'s file header explains it in full.
+Briefly: hold the switch **Down** and press a button to choose a mode, which
+**latches** on release; then **Middle** plays that mode and **Up** plays and
+records it. Latching is what lets every mode be recorded through one
+mechanism, since Down and Up never need to be held at once.
+
+    switch+A  DRUMS (default)    switch+AB  WebUI setup
+    switch+B  MUTE               switch+AC  UNDO
+    switch+C  FX1 (audio)        switch+AD  QUANTISE
+    switch+D  FX2 (timing)       switch+CD  PLAY/STOP
+
+**Singles commit on RELEASE; pairs fire IMMEDIATELY.** That asymmetry is not
+an oversight and should not be "fixed" — both halves fall out of the ghost
+rule. Four Voltages holds its last voltage, so the CV may already be sitting
+on the single you are trying to select, in which case pressing it produces no
+transition and a press-driven select would never fire. Reading the *state* on
+release is immune to that. A pair cannot get stuck the same way, because
+releasing a pair falls back onto one of its members and `levels.cpp` sets
+`current_` to that **single** — so the resting state is never a pair, and a
+pair press is always a genuine transition. See `main.cpp`'s header.
 
 ## What's NOT here — the actual next work
 
-1. **`main.cpp` does not exist.** No `ProcessSample()`, no boot sequence, no
-   switch-gesture dispatch, no LED display. NIBBLE's DRUMS-mode code in
-   `../WoskshopButtons/main.cpp` is the closest reference, but it shares the
-   file with KEYS mode — NIBBLE-KO needs the equivalent written standalone.
-2. **No sample playback.** `drums.h`'s `DrumVoice` has no PCM state. See that
-   file's header comment for exactly what's undecided before writing it
-   (position/fraction/increment fields, what the Y knob does to a sample
-   voice, per-voice backend dispatch in `DrumKit::Step()`).
-3. **No working WebUI protocol.** `webui.h`/`webui.cpp` are an interface
-   shape and a stub. `MSG_SET_SOURCE`'s payload is undecided. No TinyUSB
-   init, no SysEx dispatch, no flash writes.
-4. **No `web/index.html`.** Deliberately not written — see `web/README.md`.
-   There is no protocol yet for it to speak.
-5. **No hardware testing.** Nothing here has touched a Workshop Computer.
-   The ported logic passes its *software* verification models
-   (`tools/*sim.py`), which is a much weaker claim than "works on the bench" —
-   see `docs/LESSONS.md`'s own caveats about what those models did and didn't
-   catch for NIBBLE.
+Roughly in dependency order:
 
-**Recommended order for the next session:** design the `VoiceSource`
-dual-backend (drums.h's TODO), then write `main.cpp` against the synth
-backend only (so the card is playable and testable on hardware without
-uploads), then design and wire the sample backend + WebUI protocol together,
-since they're two ends of the same pipe.
+1. **Calibration is not persisted.** The learn machine runs and installs its
+   result, but `LearnTick()`'s success branch has a `TODO(calibstore)` where
+   the flash write belongs, and boot does not load anything back. Until that
+   exists the card recalibrates on every alt-boot and plays on the default
+   spread otherwise — i.e. it behaves like NIBBLE, which is not the design.
+   Needs a small `calibstore.h` (sibling to `samplestore.h`, own 4KB sector)
+   and the five-step flash protocol from `docs/LESSONS.md`.
+2. **Undo/Quantise do nothing.** The gestures are wired and dispatch to
+   `FireAction()`; `Looper` still needs `Snapshot()`, `Undo()` and
+   `QuantiseNow()`, plus a runtime-settable quantise grid.
+3. **Mute groups are hardcoded.** `MuteGroupOf()` splits the kit three ways
+   by voice index so the mode is testable; the real mapping is assigned per
+   voice from the WebUI.
+4. **The effects do nothing but light an LED.** `FxPress()` records which
+   slot is held and stops there. Bank 2 (timing: flam/stutter/triplet) acts
+   on the loop's firing and can be built now; bank 1 (audio: reverse/
+   tape-stop/pitch) needs the sample backend first.
+5. **No sample playback.** `drums.h`'s `DrumVoice` has no PCM state — see
+   that file's header for what is undecided (position/fraction fields, what
+   Y does to a sample voice, per-voice backend dispatch).
+6. **No WebUI.** `webui.h` is an interface shape, `webui.cpp` a stub (only
+   the 7-bit codec is real), and it is **not in the build**. No `web/`
+   client — there is no protocol for it to speak yet.
+7. **No hardware testing.** The card builds and its logic passes the Python
+   models, which is a much weaker claim than "works on the bench". The
+   commit-on-release gesture in particular is an ergonomic bet that only
+   fingers can settle.
+
+## Known gaps in what IS written
+
+Things that compile and look finished but are not, worth knowing before
+trusting them:
+
+- **`kSelectMinTicks` (50ms) is a guess.** It is the debounce that stops a
+  knock against the switch re-latching the mode. Untested by hand.
+- **The mode-flash patterns** (`ModeFlashLeds()`) are distinguishable on
+  paper. Whether four patterns on six single-colour LEDs are actually
+  *tellable apart* mid-performance is exactly the kind of thing NIBBLE's
+  LESSONS.md warns can only be answered on the bench.
+- **CV Out 1 and 2 output nothing.** Deliberate — NIBBLE's bassline is gone
+  and no replacement has been chosen.
 
 ## Why the namespace is `nko`, not `nib`
 
@@ -125,7 +170,7 @@ ever built against each other or diffed side by side.
 
 | Path | Purpose |
 |------|---------|
-| `main.cpp` | **Does not exist yet.** Card entry, `ProcessSample()`, boot latch, switch gestures, LEDs, output routing |
+| `main.cpp` | Card entry, `ProcessSample()`, boot latch, the mode machine, switch gestures, LEDs, output routing |
 | `nibbleko.h` | Shared constants, combo indices, rates, LED helpers |
 | `levels.h/.cpp` | Level detection, settle/match, **the ghost rule**, `Shift()` |
 | `drums.h/.cpp` | Twelve voices: synth engine (working), sample backend (TODO), DJ filter |
@@ -163,9 +208,21 @@ python tools/loopsim.py     # event ordering, overdub, tempo
 python tools/checkyaml.py   # info.yaml parses AND is structurally complete
 ```
 
-All pass as of this scaffold. `tools/syntax.sh` does not link, so `main.cpp`
-not existing yet means nothing currently exercises the full include graph —
-expect new syntax errors to surface once it's written.
+All pass, and the card builds clean with `-Wall -Wextra -Wdouble-promotion
+-Wfloat-conversion`. `tools/syntax.sh` does **not** link, so it cannot catch a
+missing symbol — run a real `cmake --build` before believing anything.
+
+The Python models are **line-by-line ports** of the C++ they mirror. If you
+change `levels.cpp`, `drums.cpp` or `looper.cpp`, change them too — or delete
+them rather than let them drift into telling you a comfortable lie. Between
+them they caught four real bugs on NIBBLE that would each have been hard to
+diagnose by ear.
+
+Nothing yet models `main.cpp`'s **mode machine** — the commit-on-release
+select, the pair-fires-immediately path, the record-arm transition. That is
+the obvious next thing to model, and the reasoning is the same one that
+motivated `ghostsim.py`: it is ordering-sensitive logic where a wrong answer
+is silent.
 
 ## Repo
 

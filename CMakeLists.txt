@@ -39,67 +39,65 @@ if (Python3_FOUND AND EXISTS ${SAMPLE_DIR})
   add_custom_target(pcm_samples DEPENDS ${CMAKE_CURRENT_LIST_DIR}/samples.h)
 endif()
 
-# TODO(build session): main.cpp does not exist yet — this card has no entry
-# point. What's here (levels.cpp, drums.cpp, looper.cpp, fastmath.cpp,
-# webui.cpp) is the ported/scaffolded logic from docs/LESSONS.md; main.cpp is
-# where ProcessSample(), the boot sequence and switch gestures get written,
-# same shape as ../WoskshopButtons/main.cpp's DRUMS half. Once it exists, add
-# it here and un-comment add_executable below.
+# webui.cpp is deliberately NOT built yet. It is a stub with no TinyUSB calls
+# (see its header), so linking it would only add dead weight and invite the
+# mistake of thinking USB works. It joins this list when the WebUI lands,
+# together with tinyusb_device/tinyusb_board/pico_multicore below.
+add_executable(${CARD_NAME}
+  main.cpp
+  levels.cpp
+  drums.cpp
+  looper.cpp
+  fastmath.cpp)
+
+if (TARGET pcm_samples)
+  add_dependencies(${CARD_NAME} pcm_samples)
+endif()
+# samples.h is included via samples_default.h from drums.cpp once the PCM
+# backend exists (see drums.h) — name it as a source dependency then, so
+# editing a sample actually relinks. WorkshopBio/CMakeLists.txt has the
+# set_source_files_properties(... OBJECT_DEPENDS samples.h) pattern.
+
+target_compile_options(${CARD_NAME} PRIVATE
+  -Wdouble-promotion -Wfloat-conversion -Wall -Wextra)
+
+# Worth watching every build: a sudden jump means something large landed in
+# the wrong section.
+target_link_options(${CARD_NAME} PRIVATE -Wl,--print-memory-usage)
+
+# REQUIRED for the Workshop Computer's crystal. Without it the card fails to
+# boot on a cold power-up (it works from a warm reset, which is exactly what
+# makes the bug so confusing). Do not remove.
+target_compile_definitions(${CARD_NAME} PRIVATE PICO_XOSC_STARTUP_DELAY_MULTIPLIER=64)
+
+target_include_directories(${CARD_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR})
+
+# TODO(webui): once webui.cpp's stub becomes a real TinyUSB implementation
+# (see that file's header), this needs tinyusb_device, tinyusb_board and
+# pico_multicore added — see WorkshopBio/CMakeLists.txt, whose "why there is
+# USB and a second core here but not in NIBBLE" is the relevant precedent.
 #
-# add_executable(${CARD_NAME}
-#   main.cpp
-#   levels.cpp
-#   drums.cpp
-#   looper.cpp
-#   fastmath.cpp
-#   webui.cpp)
-#
-# if (TARGET pcm_samples)
-#   add_dependencies(${CARD_NAME} pcm_samples)
-# endif()
-# # samples.h is included via samples_default.h from drums.cpp once the PCM
-# # backend exists (see drums.h) — name it as a source dependency then, so
-# # editing a sample actually relinks. WorkshopBio/CMakeLists.txt has the
-# # set_source_files_properties(... OBJECT_DEPENDS samples.h) pattern.
-#
-# target_compile_options(${CARD_NAME} PRIVATE
-#   -Wdouble-promotion -Wfloat-conversion -Wall -Wextra)
-#
-# # Worth watching every build: a sudden jump means something large landed in
-# # the wrong section.
-# target_link_options(${CARD_NAME} PRIVATE -Wl,--print-memory-usage)
-#
-# # REQUIRED for the Workshop Computer's crystal. Without it the card fails to
-# # boot on a cold power-up (it works from a warm reset, which is exactly what
-# # makes the bug so confusing). Do not remove.
-# target_compile_definitions(${CARD_NAME} PRIVATE PICO_XOSC_STARTUP_DELAY_MULTIPLIER=64)
-#
-# target_include_directories(${CARD_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR})
-#
-# # TODO(build session): once webui.cpp's stub becomes a real TinyUSB
-# # implementation (see that file's header), this needs tinyusb_device,
-# # tinyusb_board and pico_multicore added — see WorkshopBio/CMakeLists.txt,
-# # whose "why there is USB and a second core here but not in NIBBLE" is the
-# # relevant precedent. hardware_flash stays regardless: ComputerCard.h itself
-# # needs it to read the factory CV-output calibration, independent of
-# # whether this card ever writes flash of its own.
-# target_link_libraries(${CARD_NAME}
-#   pico_stdlib
-#   hardware_dma
-#   hardware_i2c
-#   hardware_pwm
-#   hardware_adc
-#   hardware_spi
-#   hardware_vreg
-#   hardware_flash)
-#
-# # TODO(build session): once user-sample uploads are real (see webui.h /
-# # samplestore.h), guard the firmware/user-region boundary the same way
-# # WorkshopBio does — PICO_FLASH_SIZE_BYTES=2097152 plus a POST_BUILD
-# # checksize.cmake call with -DLIMIT matching samplestore.h's kUserRegionOff.
-#
-# pico_add_extra_outputs(${CARD_NAME})
-#
-# # The Computer has no USB serial console in normal use, and enabling stdio
-# # over USB pulls in the whole TinyUSB stack.
-# pico_enable_stdio_usb(${CARD_NAME} 0)
+# hardware_flash stays regardless, and it is worth being precise about why:
+# ComputerCard.h itself includes hardware/flash.h to read the factory CV
+# output calibration. That dependency exists whether or not this card ever
+# writes flash of its own — which it soon will, for the saved levels.
+target_link_libraries(${CARD_NAME}
+  pico_stdlib
+  hardware_dma
+  hardware_i2c
+  hardware_pwm
+  hardware_adc
+  hardware_spi
+  hardware_vreg
+  hardware_flash)
+
+# TODO(calibstore/webui): once the saved calibration and user-sample uploads
+# are real, guard the firmware/user-region boundary the way WorkshopBio does —
+# PICO_FLASH_SIZE_BYTES=2097152 plus a POST_BUILD checksize.cmake call with
+# -DLIMIT matching samplestore.h's kUserRegionOff.
+
+pico_add_extra_outputs(${CARD_NAME})
+
+# The Computer has no USB serial console in normal use, and enabling stdio
+# over USB pulls in the whole TinyUSB stack.
+pico_enable_stdio_usb(${CARD_NAME} 0)

@@ -48,6 +48,7 @@ add_executable(${CARD_NAME}
   levels.cpp
   drums.cpp
   looper.cpp
+  fx.cpp
   fastmath.cpp)
 
 if (TARGET pcm_samples)

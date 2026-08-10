@@ -32,8 +32,22 @@
 // mechanic the kit is played with, so the whole card is one gesture:
 //
 //   MUTE   hold B, tap A / C / D     toggle mute group 1 / 2 / 3
-//   FX1    hold C, hold A / B / D    effect 1 / 2 / 3, while held
-//   FX2    hold D, hold A / B / C    effect 4 / 5 / 6, while held
+//   FX2    hold D, hold A / B / C    effect 1 / 2 / 3, while held
+//
+// FX1 goes further: ANY single is a shift there, so it carries TWELVE
+// effects rather than three — four shifts by three taps, exactly as the kit
+// gets twelve voices from the same four buttons. One family per shift, so
+// the layout is learnable as four groups rather than twelve pairings:
+//
+//   hold A + B/C/D   filters      low-pass / high-pass / band sweep
+//   hold B + A/C/D   destruction  bit-crush / decimate / wavefold
+//   hold C + A/B/D   time         stutter / half-time / double-time
+//   hold D + A/B/C   dynamics     gate / flam / silence
+//
+// Main sets each effect's depth. See fx.h for the table and fx.cpp for the
+// DSP. FX2 is deliberately left at three as a placeholder — if one bank
+// holds twelve, whether a second bank should exist at all is a real
+// question, and worth answering after playing these rather than before.
 //
 // A bare press does nothing in these modes. That is not a restriction, it is
 // the only thing that WORKS: to press A twice you must pass back through the
@@ -106,6 +120,7 @@
 #include "levels.h"
 #include "drums.h"
 #include "looper.h"
+#include "fx.h"
 #include "fastmath.h"
 
 #include "hardware/vreg.h"
@@ -158,6 +173,19 @@ constexpr int32_t kGateSamples = kSampleRate / 200;
 /// Click-track pulse length. Shorter than a gate — it is a metronome tick, not
 /// a note, and at 240bpm the beats are only a quarter of a second apart.
 constexpr int32_t kClickSamples = kSampleRate / 500;   // 2ms
+
+/// The gap between a flam's two strikes, in control ticks.
+///
+/// ~13ms at 3kHz. A flam is a grace note, not an echo: far enough apart to be
+/// heard as two attacks, close enough that they read as one thickened hit.
+/// Much past 30ms it stops being a flam and starts being a mistake.
+constexpr int32_t kFlamTicks = 40;
+
+/// Stutter division, in control ticks: the fastest repeat and how much slower
+/// the knob can make it. 30 ticks is 10ms (a buzz), 30+270 is 100ms (a
+/// sixteenth at 150bpm).
+constexpr int32_t kStutterMin   = 30;
+constexpr int32_t kStutterRange = 270;
 
 /// How long an UNDO is announced on the status LEDs.
 ///
@@ -238,6 +266,13 @@ struct AutoKnob
 
 	void Playback(int32_t v) { playback_ = v; }
 	void Forget()            { playback_ = -1; }
+
+	/// The value Update() last settled on — whichever of hand or playback is
+	/// currently driving. For readers that need it outside the update.
+	int32_t Value() const
+	{
+		return (HandOwns() || playback_ < 0) ? smooth_ : playback_;
+	}
 };
 
 } // namespace
@@ -719,14 +754,57 @@ private:
 	// for something else. Also note the mode-reminder LED pulses the mode's
 	// single shift button, which stops meaning anything with four of them.
 
-	/// Which effect is held right now, as a bit per slot. Control rate.
+	/// Which effect is held right now. Control rate.
+	///
+	/// ANY single may be the shift, not just the mode's own button: four
+	/// shifts times three taps is twelve gestures, exactly as DRUMS gets
+	/// twelve voices from the same four buttons. Shift() is what recovers
+	/// which of the pair was held first, and the whole thing costs one table
+	/// lookup — see fx.h.
 	void __not_in_flash_func(FxUpdate)()
 	{
-		fxHeld_ = 0;
+		fxHeld_    = 0;
+		fxCurrent_ = Fx::None;
 
 		// Not while the switch is down — those presses are choosing a mode.
-		if (selectArmed_) return;
+		if (selectArmed_)
+		{
+			fx_.Set(Fx::None, 0);
+			return;
+		}
 
+		if (mode_ == Mode::Fx1)
+		{
+			// CURRENT(), not Sounding() — an effect must die on release. See
+			// the long note below, which is still the reason.
+			const int8_t combo = levels_.Current();
+			const int8_t shift = levels_.Shift();
+			if (combo >= kNumSingles && shift >= 0 && shift < kNumSingles)
+			{
+				const int8_t tap = OtherMember(combo, shift);
+				if (tap >= 0)
+				{
+					fxCurrent_ = kFxForGesture[shift][tap];
+					// Light the TAP's pad. The shift already shows itself as
+					// the steady mode marker, so lighting it too would say the
+					// same thing twice and lose which effect is running.
+					if (fxCurrent_ != Fx::None)
+						fxHeld_ = static_cast<uint8_t>(1u << tap);
+				}
+			}
+			fx_.Set(fxCurrent_, filterLane_.Value());
+			return;
+		}
+
+		// --- FX2: still the old single-shift form ------------------------
+		//
+		// Mode D keeps three effects on its own button as a PLACEHOLDER. It
+		// is deliberately not expanded to twelve alongside FX1: if one bank
+		// can hold twelve, the honest question is whether a second bank
+		// should exist at all, or whether switch+D is better spent on
+		// something else entirely. That is a decision to make once FX1's
+		// twelve have been played, not before.
+		//
 		// CURRENT(), not Sounding(). This is the whole difference between an
 		// effect and a hit, and getting it wrong broke two things at once.
 		//
@@ -789,6 +867,25 @@ private:
 
 		if (!playing_) return;
 
+		// TIMING effects re-time the transport rather than processing audio.
+		//
+		// Half and double time are done by skipping or doubling the Advance()
+		// call, not by touching the tempo: the tempo is a recorded, clocked
+		// quantity and warping it would fight the external clock and leave the
+		// loop out of phase when the effect ends. Skipping ticks keeps the
+		// playhead's own arithmetic untouched, so releasing the button lands
+		// back exactly where the pattern would have been.
+		const FxTiming timing = fx_.Timing();
+
+		if (timing == FxTiming::Half)
+		{
+			// Advance on every OTHER control tick.
+			halfPhase_ = !halfPhase_;
+			if (!halfPhase_) return;
+		}
+
+		int advances = (timing == FxTiming::Double) ? 2 : 1;
+		for (int a = 0; a < advances; a++)
 		if (loop_.Advance())
 		{
 			// Pulse Out 2 is a CLICK TRACK: one blip per crotchet, so you have
@@ -818,7 +915,49 @@ private:
 				// played it. Flash the pads that gesture uses, looked up from
 				// the map, so playback lights what the performance did.
 				FlashVoice(voices[i]);
+
+				// FLAM: schedule a second strike of the same voice a few ms
+				// later. One repeat, not a roll — a flam is a grace note.
+				if (timing == FxTiming::Flam && flamCount_ == 0)
+				{
+					flamVoice_ = voices[i];
+					flamTicks_ = kFlamTicks;
+					flamCount_ = 1;
+				}
 			}
+
+			// STUTTER: re-fire the most recent hit at a fixed division, so a
+			// held button turns whatever just played into a roll. Remembered
+			// per tick rather than per hit so a chord stutters its last voice
+			// rather than all of them at once.
+			if (n > 0) lastVoice_ = voices[n - 1];
+		}
+
+		// Deferred strikes: the flam's second hit, and the stutter's repeats.
+		// Both run at control rate, outside the Advance() branch, because they
+		// are measured in real time rather than in loop ticks — a flam that
+		// scaled with tempo would stop being a flam at 40bpm.
+		if (flamTicks_ > 0 && --flamTicks_ == 0)
+		{
+			TriggerVoice(flamVoice_);
+			FlashVoice(flamVoice_);
+			flamCount_ = 0;
+		}
+
+		if (timing == FxTiming::Stutter && lastVoice_ >= 0)
+		{
+			if (--stutterTicks_ <= 0)
+			{
+				// The Main knob sets the division: slow rolls to a machine-gun.
+				stutterTicks_ = kStutterMin
+				              + ((4095 - filterLane_.Value()) * kStutterRange >> 12);
+				TriggerVoice(lastVoice_);
+				FlashVoice(lastVoice_);
+			}
+		}
+		else
+		{
+			stutterTicks_ = 0;   // re-arm, so the next stutter starts at once
 		}
 	}
 
@@ -996,6 +1135,12 @@ private:
 	{
 		int32_t dry = drums_.Step();
 		int32_t wet = djFilter_.Step(dry);
+
+		// The performance effect sits AFTER the DJ filter, so it has the last
+		// word — a gate or a mute must be able to cut whatever the filter is
+		// passing, not be smoothed back open by it.
+		wet = fx_.Step(wet);
+
 		int16_t out = clamp12(wet);
 
 		// Mono bus to both outs: the kit is not panned, and a player patching
@@ -1104,10 +1249,24 @@ private:
 		switch (mode_)
 		{
 		case Mode::Fx1:
+		{
+			// fxHeld_ is a mask of BUTTONS here, not slots — any single can be
+			// the shift, so there is no fixed slot order to walk. C stays lit
+			// as the steady mode marker even though it is no longer the only
+			// shift; it is what tells FX1 from FX2 at a glance.
+			for (int8_t i = 0; i < 4; i++)
+			{
+				uint16_t b = (fxHeld_ & (1u << i)) ? kLedFull : 0;
+				if (b == 0 && i == kC) b = ModeReminder();
+				LedBrightness(i, b);
+			}
+			break;
+		}
+
 		case Mode::Fx2:
 		{
-			// Nothing but the effect being held, lit for exactly as long as it
-			// is held. No other feedback competes for these four LEDs.
+			// Still the single-shift form — see FxUpdate(). Slots walk in
+			// panel order, skipping the shift.
 			const int8_t shift = ModeShift();
 			int8_t slot = 0;
 			for (int8_t i = 0; i < 4; i++)
@@ -1331,7 +1490,20 @@ private:
 	bool     playing_   = true;
 	bool     recording_ = false;
 	uint8_t  muted_     = 0;        ///< bit per mute group
-	uint8_t  fxHeld_    = 0;        ///< bit per effect slot in the live bank
+	uint8_t  fxHeld_    = 0;        ///< which PAD to light, bit per button
+
+	// --- performance effects (FX1) ---------------------------------------
+	FxRack   fx_;
+	Fx       fxCurrent_ = Fx::None;
+	/// Half-time alternates this, advancing the loop on every other tick.
+	bool     halfPhase_ = false;
+	/// The last voice the loop fired, for STUTTER to repeat.
+	int8_t   lastVoice_    = -1;
+	int32_t  stutterTicks_ = 0;
+	/// FLAM's deferred second strike.
+	int8_t   flamVoice_ = -1;
+	int32_t  flamTicks_ = 0;
+	int32_t  flamCount_ = 0;
 	AutoKnob filterLane_;           ///< Main knob: the DJ filter
 	AutoKnob toneLane_;             ///< Y knob: kit character
 	int32_t  toneKnob_  = 2048;     ///< the Y value voices are struck with

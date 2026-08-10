@@ -135,6 +135,12 @@ void DrumVoice::Trigger(const DrumSpec &spec, int32_t pitchScaleQ16, int32_t dec
 	pcm_    = nullptr;
 	pcmLen_ = 0;
 
+	// And the transport effects, which are armed per HIT — a slot that was
+	// last reversed must not reverse the next thing that lands on it.
+	reverse_   = false;
+	swell_     = 0;
+	stopScale_ = -1;
+
 	phase_      = 0;
 	phase2_     = 0;
 	pitch_      = static_cast<uint32_t>(p0);
@@ -168,6 +174,10 @@ void DrumVoice::TriggerPcm(const int8_t *data, uint32_t len,
 	pcmIdx_  = 0;
 	pcmFrac_ = 0;
 
+	// Armed per hit, so clear whatever the previous user of this slot left.
+	reverse_   = false;
+	stopScale_ = -1;
+
 	// Clamped either side. Below about an octave down a short one-shot turns
 	// into a slow lump several seconds long, and above four octaves up it is
 	// a click — both are past the point where the control is musical, and the
@@ -186,6 +196,44 @@ void DrumVoice::TriggerPcm(const int8_t *data, uint32_t len,
 	noiseEnv_ = 0;
 }
 
+void DrumVoice::SetReverse()
+{
+	reverse_ = true;
+
+	if (pcm_)
+	{
+		// Start at the last whole sample and walk down. One short of the end
+		// so the first interpolation still has a neighbour above it.
+		pcmIdx_  = (pcmLen_ > 1) ? pcmLen_ - 2 : 0;
+		pcmFrac_ = 0;
+		return;
+	}
+
+	// A synthesised voice has nothing to play backwards, so its ENVELOPE is
+	// reversed instead: silence swelling into the hit rather than decaying
+	// out of it. The swell runs over roughly the length the decay would have
+	// taken, so a reversed crash still feels like a crash.
+	//
+	// Derived from the decay shift rather than fixed, so a long voice swells
+	// slowly and a short one snaps — which is the same relationship the
+	// forward envelope has.
+	swell_    = 0;
+	swellInc_ = (4095 << kDrumEnvFrac) >> (decayShift_ + 1);
+	if (swellInc_ < 1) swellInc_ = 1;
+}
+
+void DrumVoice::SetTapeStop(int32_t fallSamples)
+{
+	if (fallSamples < 1) fallSamples = 1;
+
+	// A Q16 scale that walks from 1.0 to 0 over the fall. Linear rather than
+	// exponential: an exponential approach never actually reaches zero, and
+	// the whole point of a tape stop is that it STOPS.
+	stopScale_ = 65536;
+	stopDec_   = 65536 / fallSamples;
+	if (stopDec_ < 1) stopDec_ = 1;
+}
+
 int32_t __not_in_flash_func(DrumVoice::Step)(uint32_t &rng)
 {
 	// --- sampled voices ---------------------------------------------------
@@ -202,9 +250,38 @@ int32_t __not_in_flash_func(DrumVoice::Step)(uint32_t &rng)
 		const int32_t mu = static_cast<int32_t>(pcmFrac_);
 		const int32_t s  = a + (((b - a) * mu) >> 16);
 
-		pcmFrac_ += pcmInc_;
-		pcmIdx_  += pcmFrac_ >> 16;
+		// Tape stop scales the rate down to nothing. Applied here rather than
+		// by rewriting pcmInc_ so the ORIGINAL rate survives — which matters
+		// because the Y knob already set it, and a stop should not erase the
+		// pitch the voice was struck at.
+		uint32_t inc = pcmInc_;
+		if (stopScale_ >= 0)
+		{
+			inc = static_cast<uint32_t>(
+				(static_cast<int64_t>(inc) * stopScale_) >> 16);
+			stopScale_ -= stopDec_;
+			if (stopScale_ < 0) stopScale_ = 0;
+			// Fully stopped: free the slot rather than sitting on one sample
+			// forever, which would hold a voice against the allocator and
+			// leak a DC offset into the mix.
+			if (stopScale_ == 0) { pcm_ = nullptr; return 0; }
+		}
+
+		pcmFrac_ += inc;
+		const uint32_t step = pcmFrac_ >> 16;
 		pcmFrac_ &= 0xFFFF;
+
+		if (reverse_)
+		{
+			// Walking down. Ending is running off the START, so guard the
+			// unsigned subtraction rather than letting it wrap to 4 billion.
+			if (pcmIdx_ < step) { pcm_ = nullptr; return 0; }
+			pcmIdx_ -= step;
+		}
+		else
+		{
+			pcmIdx_ += step;
+		}
 
 		// 8-bit source (-128..127) up to the card's 12-bit range, then the
 		// per-voice level, exactly as the synth path applies it.
@@ -213,8 +290,29 @@ int32_t __not_in_flash_func(DrumVoice::Step)(uint32_t &rng)
 
 	if (env_ <= 0 && noiseEnv_ <= 0) return 0;
 
+	// Tape stop on a SYNTH voice drops its pitch instead of its rate — there
+	// is no playback rate to slow, but winding the oscillator down to nothing
+	// is the same gesture and sounds like the same thing.
+	//
+	// The envelope is left alone deliberately: a synth voice that stopped
+	// dead would just be a mute, where letting it keep decaying while the
+	// pitch falls away is what makes it read as a wind-down.
+	if (stopScale_ >= 0)
+	{
+		stopScale_ -= stopDec_;
+		if (stopScale_ <= 0)
+		{
+			stopScale_ = 0;
+			env_ = noiseEnv_ = 0;     // wound fully down: let the slot go
+			return 0;
+		}
+	}
+
 	// --- body: a triangle folded out of an 18-bit phase accumulator ---
-	phase_ = (phase_ + pitch_) & kPhaseMask;
+	const uint32_t inc = (stopScale_ >= 0)
+		? static_cast<uint32_t>((static_cast<int64_t>(pitch_) * stopScale_) >> 16)
+		: pitch_;
+	phase_ = (phase_ + inc) & kPhaseMask;
 
 	// Triangle, folded out of the accumulator and scaled to +/-2047 regardless
 	// of the accumulator width.
@@ -277,8 +375,29 @@ int32_t __not_in_flash_func(DrumVoice::Step)(uint32_t &rng)
 	}
 
 	// --- mix body and noise by the voice's character ---
-	int32_t body = (osc   * (env_      >> kDrumEnvFrac)) >> 12;
-	int32_t nz   = (noise * (noiseEnv_ >> kDrumEnvFrac)) >> 12;
+	//
+	// REVERSED voices use the swell in place of the decay: silence climbing
+	// into the hit rather than falling out of it. Both envelopes are replaced,
+	// so a noisy voice reverses as convincingly as a tonal one.
+	int32_t amp      = env_;
+	int32_t noiseAmp = noiseEnv_;
+	if (reverse_)
+	{
+		swell_ += swellInc_;
+		if (swell_ > (4095 << kDrumEnvFrac))
+		{
+			// Reached full: the hit "lands", and from here the voice is done.
+			// Stopping rather than decaying afterwards is what makes it a
+			// reverse and not a swell-then-fade.
+			env_ = noiseEnv_ = 0;
+			return 0;
+		}
+		amp      = swell_;
+		noiseAmp = (noiseMix_ > 0) ? swell_ : 0;
+	}
+
+	int32_t body = (osc   * (amp      >> kDrumEnvFrac)) >> 12;
+	int32_t nz   = (noise * (noiseAmp >> kDrumEnvFrac)) >> 12;
 	int32_t mixed = ((body * (256 - noiseMix_)) + (nz * noiseMix_)) >> 8;
 
 	// Per-voice level. Without it a long voice is simply louder, because every
@@ -291,7 +410,8 @@ int32_t __not_in_flash_func(DrumVoice::Step)(uint32_t &rng)
 // The kit
 // ---------------------------------------------------------------------------
 
-void DrumKit::TriggerVoice(int8_t voice, int32_t yKnob)
+void DrumKit::TriggerVoice(int8_t voice, int32_t yKnob,
+                           bool reverse, int32_t tapeStopSamples)
 {
 	if (voice < 0 || voice >= kNumVoices) return;
 
@@ -318,6 +438,12 @@ void DrumKit::TriggerVoice(int8_t voice, int32_t yKnob)
 		slot.TriggerPcm(s.data, s.len, pitchScale, kVoices[voice].level);
 	else
 		slot.Trigger(kVoices[voice], pitchScale, decayAdj);
+
+	// The transport effects go on AFTER the trigger, because both need the
+	// voice already set up: reverse has to know where the recording ends, and
+	// the tape stop scales whatever rate the Y knob just chose.
+	if (reverse)             slot.SetReverse();
+	if (tapeStopSamples > 0) slot.SetTapeStop(tapeStopSamples);
 }
 
 /// Choose a voice slot: a free one if there is one, otherwise the QUIETEST.

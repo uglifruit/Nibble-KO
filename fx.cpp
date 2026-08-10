@@ -9,10 +9,10 @@ namespace nko {
 // button cannot shift itself.
 const Fx kFxForGesture[kNumSingles][kNumSingles] = {
 	//          tap A            tap B            tap C            tap D
-	/* A */ { Fx::None,       Fx::LowPass,     Fx::HighPass,    Fx::BandSweep  },
-	/* B */ { Fx::Crush,      Fx::None,        Fx::Decimate,    Fx::Fold       },
-	/* C */ { Fx::Stutter,    Fx::HalfTime,    Fx::None,        Fx::DoubleTime },
-	/* D */ { Fx::Gate,       Fx::Flam,        Fx::Silence,     Fx::None       },
+	/* A */ { Fx::None,       Fx::LowPass,     Fx::HighPass,    Fx::BandSweep },
+	/* B */ { Fx::Crush,      Fx::None,        Fx::Decimate,    Fx::Fold      },
+	/* C */ { Fx::Stutter,    Fx::Flam,        Fx::None,        Fx::Gate      },
+	/* D */ { Fx::Reverse,    Fx::TapeStop,    Fx::Silence,     Fx::None      },
 };
 
 void FxRack::SetSlot(int slot, Fx f, int32_t depth)
@@ -52,17 +52,18 @@ void FxRack::Clear()
 
 FxTiming FxRack::Timing() const
 {
-	// Only the timing slot is consulted, so half-time and double-time can
-	// never both be asking at once — the exclusivity is structural rather
-	// than something that has to be resolved here.
-	switch (slot_[kFxTimingSlot].fx)
+	switch (slot_[kFxRhythmSlot].fx)
 	{
-	case Fx::HalfTime:   return FxTiming::Half;
-	case Fx::DoubleTime: return FxTiming::Double;
-	case Fx::Stutter:    return FxTiming::Stutter;
-	case Fx::Flam:       return FxTiming::Flam;
-	default:             return FxTiming::Normal;
+	case Fx::Stutter: return FxTiming::Stutter;
+	case Fx::Flam:    return FxTiming::Flam;
+	default:          return FxTiming::Normal;
 	}
+}
+
+Fx FxRack::TriggerFx() const
+{
+	const Fx f = slot_[kD].fx;
+	return IsTriggerFx(f) ? f : Fx::None;
 }
 
 int32_t __not_in_flash_func(FxRack::Step)(int32_t in)
@@ -70,14 +71,17 @@ int32_t __not_in_flash_func(FxRack::Step)(int32_t in)
 	if (active_ == 0) return in;
 
 	// Series, in shift order, so the chain is deterministic rather than
-	// depending on which effect was recorded first. The timing slot is
-	// skipped: its effects act on the looper, not on the signal.
+	// depending on which effect was recorded first.
+	//
+	// Every slot is walked now, including C: it used to be skipped wholesale
+	// because it held the transport effects, but its rhythmic set contains
+	// GATE, which is an ordinary audio effect and has to be in the chain to
+	// do anything. Effects that act elsewhere — stutter and flam at trigger
+	// time, reverse and tape-stop when a voice starts — fall through
+	// FxSlot::Step as pass-throughs, so no slot needs special-casing here.
 	int32_t v = in;
 	for (int i = 0; i < kNumFxSlots; i++)
-	{
-		if (i == kFxTimingSlot) continue;
 		if (active_ & (1u << i)) v = slot_[i].Step(v);
-	}
 	return v;
 }
 
@@ -187,11 +191,13 @@ int32_t __not_in_flash_func(FxSlot::Step)(int32_t in)
 		// hole, and a fade would blunt it.
 		return 0;
 
-	// Timing effects do not touch the audio path at all.
+	// These act somewhere other than the audio path: stutter and flam
+	// schedule extra hits, reverse and tape-stop change how a voice STARTS.
+	// Pass through untouched.
 	case Fx::Stutter:
-	case Fx::HalfTime:
-	case Fx::DoubleTime:
 	case Fx::Flam:
+	case Fx::Reverse:
+	case Fx::TapeStop:
 		return in;
 	}
 }

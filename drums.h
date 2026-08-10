@@ -149,6 +149,20 @@ public:
 	void TriggerPcm(const int8_t *data, uint32_t len,
 	                int32_t rateQ16, uint16_t level);
 
+	/// Play this voice BACKWARDS. Applied at trigger time, so it affects
+	/// hits that start while the effect is held and leaves ones already
+	/// sounding alone.
+	///
+	/// A sampled voice starts at the end and walks down. A synthesised one
+	/// has no recording to reverse, so its ENVELOPE runs backwards instead —
+	/// quiet to loud rather than loud to quiet, which is what a reversed
+	/// sample sounds like. Different mechanism, same musical gesture.
+	void SetReverse();
+
+	/// Slow to a halt like tape. `fallTicks` is how many samples the fall
+	/// takes; the rate (or pitch) decays toward zero over that span.
+	void SetTapeStop(int32_t fallSamples);
+
 	/// One audio-rate sample. Returns roughly -2047..2047; silent when idle.
 	int32_t Step(uint32_t &rng);
 
@@ -205,6 +219,20 @@ private:
 	uint32_t      pcmIdx_ = 0;         ///< whole samples played
 	uint32_t      pcmFrac_ = 0;        ///< Q16 fraction within the current one
 	uint32_t      pcmInc_ = 65536;     ///< Q16 rate; 65536 = recorded pitch
+
+	// --- transport effects ------------------------------------------------
+	/// Walking backwards through the recording (or running the envelope
+	/// backwards, on a synthesised voice).
+	bool     reverse_ = false;
+	/// Envelope position for a reversed SYNTH voice: climbs 0 -> full where
+	/// the normal envelope falls. Separate from env_ because env_ is also the
+	/// decay's own state and reusing it would fight the decay arithmetic.
+	int32_t  swell_    = 0;
+	int32_t  swellInc_ = 0;
+	/// Tape-stop: the rate is multiplied by this Q16 scale, which decays to
+	/// zero over the fall. -1 when not stopping.
+	int32_t  stopScale_ = -1;
+	int32_t  stopDec_   = 0;
 };
 
 /// How many voices can decay at once.
@@ -228,9 +256,12 @@ public:
 	/// warp voices that are already decaying — which would sound like a fault
 	/// rather than a control.
 	///
-	/// TODO(design session): what Y does to a Sample-backed voice is undecided —
-	/// see the VoiceSource comment above and docs/LESSONS.md §4.
-	void TriggerVoice(int8_t voice, int32_t yKnob);
+	/// `reverse` and `tapeStopSamples` are the D-bank transport effects,
+	/// applied as the voice STARTS — which is the only time they can be,
+	/// since both change how the sound is produced rather than filtering it
+	/// afterwards. Pass 0 for no tape stop.
+	void TriggerVoice(int8_t voice, int32_t yKnob,
+	                  bool reverse = false, int32_t tapeStopSamples = 0);
 
 	/// Sum of every active voice, soft-clipped. Ten voices at full scale would
 	/// reach +/-20470, so clipping is mandatory rather than a nicety.

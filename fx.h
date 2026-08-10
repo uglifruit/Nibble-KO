@@ -31,7 +31,17 @@ namespace nko {
 /// makes twelve gestures learnable — you remember "B is the destructive
 /// ones", not twelve arbitrary pairings.
 ///
-///   A = filters      B = destruction     C = time      D = dynamics
+///   A = filters   B = destruction   C = rhythmic   D = transport
+///
+/// HALF-TIME AND DOUBLE-TIME USED TO LIVE IN C AND ARE GONE. They were the
+/// only effects that moved the PLAYHEAD rather than filtering the output, and
+/// that made them quietly destructive: engaging one off-beat displaced the
+/// loop's phase permanently, because releasing simply carried on from
+/// wherever the playhead had got to. A bar of half-time left the pattern half
+/// a bar behind everything else in the rack with nothing to pull it back. A
+/// phase-preserving version is possible — skip ticks, then snap to where the
+/// pattern would have been — but it is real work for something that was not
+/// much fun to play, so the idea went with them.
 enum class Fx : uint8_t {
 	None = 0,
 
@@ -45,14 +55,18 @@ enum class Fx : uint8_t {
 	Decimate,     ///< B+C  sample-rate reduction
 	Fold,         ///< B+D  wavefolder, Main sets drive
 
-	// --- C: time ---------------------------------------------------------
-	Stutter,      ///< C+A  re-fire the last hit at a fixed division
-	HalfTime,     ///< C+B  the loop plays at half speed
-	DoubleTime,   ///< C+D  the loop plays at double speed
+	// --- C: rhythmic ------------------------------------------------------
+	Stutter,      ///< C+A  re-fire the last hit, Main sets the division
+	Flam,         ///< C+B  every hit doubles, Main sets the gap
+	Gate,         ///< C+D  chop the bus on and off, Main sets the rate
 
-	// --- D: dynamics ------------------------------------------------------
-	Gate,         ///< D+A  chop the bus on and off rhythmically
-	Flam,         ///< D+B  every hit doubles, a few ms apart
+	// --- D: transport -----------------------------------------------------
+	//
+	// These mean DIFFERENT THINGS to a sampled voice and a synthesised one,
+	// which is the point of grouping them: the gesture is "play it wrong on
+	// purpose", and what that means depends on what the voice is made of.
+	Reverse,      ///< D+A  samples play backwards; synth voices swell
+	TapeStop,     ///< D+B  rate or pitch falls to zero. Main sets fall time
 	Silence,      ///< D+C  hard mute, for drop-outs
 
 	kNumFx
@@ -65,33 +79,34 @@ enum class Fx : uint8_t {
 /// be rearranged without touching either the gesture reader or the DSP.
 extern const Fx kFxForGesture[kNumSingles][kNumSingles];
 
-/// What an effect does to the loop's timing, if anything.
+/// What an effect does to TRIGGERING, if anything. Nothing here moves the
+/// playhead — see the note on the removed half/double-time above.
 enum class FxTiming : uint8_t {
 	Normal = 0,
-	Half,        ///< half speed
-	Double,      ///< double speed
 	Stutter,     ///< repeat the last hit at a division
 	Flam,        ///< double every hit, closely spaced
 };
 
-/// Is this effect an audio-path one, or a timing one?
-static inline bool IsTimingFx(Fx f)
+/// Does this effect act at TRIGGER time rather than on the audio?
+///
+/// Reverse and TapeStop are both: a voice has to be STARTED backwards or
+/// started with a falling rate, which cannot be done to a signal that has
+/// already been mixed. They are applied in DrumKit::TriggerVoice.
+static inline bool IsTriggerFx(Fx f)
 {
-	return f == Fx::Stutter || f == Fx::HalfTime
-	    || f == Fx::DoubleTime || f == Fx::Flam;
+	return f == Fx::Reverse || f == Fx::TapeStop;
 }
 
 /// How many effects can be layered at once. One per SHIFT button — each shift
 /// owns an automation lane, so up to four recorded effects can overlap.
 constexpr int kNumFxSlots = kNumSingles;
 
-/// Shift C's slot holds the TIME family, and those cannot stack — half-time
-/// and double-time together is a contradiction, not a texture. That slot is
-/// therefore exclusive and never joins the audio chain; its effects act on
-/// the looper instead. Mirrors kLaneTiming in looper.h, which is deliberately
-/// NOT included here: fx.h is included BY the looper's caller, and pulling
-/// looper.h in would make the dependency circular for one constant.
-constexpr int kFxTimingSlot = kC;
+/// Shift C's slot is where the rhythmic effects live. It is no longer
+/// exclusive: half-time and double-time were the only pair that genuinely
+/// contradicted each other, and they are gone. Stutter and flam act on
+/// triggering, gate acts on the signal, and none of the three conflicts with
+/// anything in another bank — so C chains like every other slot.
+constexpr int kFxRhythmSlot = kC;
 
 /// One effect and the state it needs, independent of the others.
 ///
@@ -143,9 +158,16 @@ public:
 	/// Clear every slot. Cheaper than four calls and says what it means.
 	void Clear();
 
-	/// How the loop should be re-timed, if at all. Only the timing slot can
-	/// ask for this, so there is never a conflict to resolve.
+	/// What the rhythmic slot is asking for at trigger time, if anything.
 	FxTiming Timing() const;
+
+	/// Which TRIGGER-time effect is armed (reverse, tape-stop), or None.
+	///
+	/// Separate from Timing() because these are answered by a different slot
+	/// and consumed in a different place: DrumKit::TriggerVoice needs them
+	/// when a voice STARTS, where Timing() is about whether extra hits get
+	/// scheduled at all.
+	Fx TriggerFx() const;
 
 	/// True if any slot is doing anything, for the audio path to skip the
 	/// whole chain when nothing is active.

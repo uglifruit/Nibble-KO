@@ -41,8 +41,17 @@
 //
 //   hold A + B/C/D   filters      low-pass / high-pass / band sweep
 //   hold B + A/C/D   destruction  bit-crush / decimate / wavefold
-//   hold C + A/B/D   time         stutter / half-time / double-time
-//   hold D + A/B/C   dynamics     gate / flam / silence
+//   hold C + A/B/D   rhythmic     stutter / flam / gate
+//   hold D + A/B/C   transport    reverse / tape-stop / silence
+//
+// The D bank means DIFFERENT THINGS to a sampled voice and a synthesised
+// one, which is why those three are grouped: the gesture is "play it wrong
+// on purpose", and what that means depends on what the voice is made of.
+// Reverse plays a recording backwards, and runs a synth voice's ENVELOPE
+// backwards — a swell instead of a decay. Tape-stop winds a recording's rate
+// down to nothing, and a synth voice's PITCH down to nothing. Both are armed
+// at trigger time, so they catch hits that start while the effect is held
+// and leave ones already sounding alone.
 //
 // HOLD A SHIFT ALONE and turn Main to draw that lane's PARAMETER CURVE. It
 // needs no gesture of its own because it is the absence of one — you are
@@ -204,12 +213,22 @@ constexpr int32_t kClickSamples = kSampleRate / 500;   // 2ms
 /// therefore counted down where the loop advances, not on the control tick.
 constexpr int32_t kFxPlaybackHold = 2 * kKnobSampleTicks;
 
-/// The gap between a flam's two strikes, in control ticks.
+/// How long a TAPE STOP takes to wind down, in audio samples.
 ///
-/// ~13ms at 3kHz. A flam is a grace note, not an echo: far enough apart to be
-/// heard as two attacks, close enough that they read as one thickened hit.
-/// Much past 30ms it stops being a flam and starts being a mistake.
-constexpr int32_t kFlamTicks = 40;
+/// 2400 is 50ms — an abrupt brake, the sort a finger on a capstan gives. The
+/// top of the range is 2.4 seconds, long enough that a hit becomes a slow
+/// descending groan rather than a stop. Both ends are musical; the middle is
+/// the classic effect.
+constexpr int32_t kTapeStopMin   = 2400;
+constexpr int32_t kTapeStopRange = 115200;
+
+/// The gap between a flam's two strikes, in control ticks, across the knob.
+///
+/// 15 ticks is 5ms — barely two attacks, more a thickening of one hit. 105 is
+/// 35ms, where the two are clearly separate and it starts to read as a fast
+/// echo rather than a grace note. The classic flam sits around the middle.
+constexpr int32_t kFlamMin   = 15;
+constexpr int32_t kFlamRange = 90;
 
 /// Stutter division, in control ticks: the fastest repeat and how much slower
 /// the knob can make it. 30 ticks is 10ms (a buzz), 30+270 is 100ms (a
@@ -731,7 +750,26 @@ private:
 
 		if (muted_ & (1u << grp)) return;
 
-		drums_.TriggerVoice(voice, toneKnob_);
+		// The D-bank transport effects are armed HERE rather than in the audio
+		// path, because both change how a voice is produced: reverse starts it
+		// at the far end, tape-stop starts it with a rate that will wind down.
+		// Applying them at trigger time is also what makes them affect hits
+		// that START while the effect is held and leave ones already sounding
+		// alone — which is how a KO/PO-12 FX button behaves.
+		const Fx tfx = fx_.TriggerFx();
+		const bool reverse = (tfx == Fx::Reverse);
+		int32_t stopSamples = 0;
+		if (tfx == Fx::TapeStop)
+		{
+			// The knob sets how long the fall takes: a fast brake at one end,
+			// a long wind-down at the other. Read from D's own parameter lane
+			// so a recorded curve drives it exactly as it drives everything
+			// else — see FxSlotDepth.
+			stopSamples = kTapeStopMin
+			            + ((FxSlotDepth(kD) * kTapeStopRange) >> 12);
+		}
+
+		drums_.TriggerVoice(voice, toneKnob_, reverse, stopSamples);
 		gateTimer_ = kGateSamples;
 	}
 
@@ -1059,25 +1097,17 @@ private:
 
 		if (!playing_) return;
 
-		// TIMING effects re-time the transport rather than processing audio.
+		// The rhythmic effects schedule EXTRA hits (stutter, flam); they do
+		// not move the playhead.
 		//
-		// Half and double time are done by skipping or doubling the Advance()
-		// call, not by touching the tempo: the tempo is a recorded, clocked
-		// quantity and warping it would fight the external clock and leave the
-		// loop out of phase when the effect ends. Skipping ticks keeps the
-		// playhead's own arithmetic untouched, so releasing the button lands
-		// back exactly where the pattern would have been.
+		// Half-time and double-time used to, by skipping or doubling this
+		// Advance() call, and that is why they are gone: engaging one off-beat
+		// displaced the loop's phase permanently, because releasing simply
+		// carried on from wherever the playhead had reached. Nothing pulled it
+		// back. Every effect on the card is now a filter on the way out rather
+		// than something that can desynchronise the pattern.
 		const FxTiming timing = fx_.Timing();
 
-		if (timing == FxTiming::Half)
-		{
-			// Advance on every OTHER control tick.
-			halfPhase_ = !halfPhase_;
-			if (!halfPhase_) return;
-		}
-
-		int advances = (timing == FxTiming::Double) ? 2 : 1;
-		for (int a = 0; a < advances; a++)
 		if (loop_.Advance())
 		{
 			// A replayed effect expires in LOOP ticks, so it is aged HERE
@@ -1142,7 +1172,12 @@ private:
 				if (timing == FxTiming::Flam && flamCount_ == 0)
 				{
 					flamVoice_ = voices[i];
-					flamTicks_ = kFlamTicks;
+					// The gap is the rhythmic lane's parameter: a tight
+					// thickening at one end, a distinct doubled hit at the
+					// other. It used to be a fixed 13ms, which left C+B with
+					// a parameter lane that did nothing.
+					flamTicks_ = kFlamMin
+					           + ((FxSlotDepth(kFxRhythmSlot) * kFlamRange) >> 12);
 					flamCount_ = 1;
 				}
 			}
@@ -1178,7 +1213,7 @@ private:
 				// as well. The timing effects were bypassing the per-slot
 				// parameter system that the audio effects already used.
 				stutterTicks_ = kStutterMin
-				              + ((4095 - FxSlotDepth(kFxTimingSlot))
+				              + ((4095 - FxSlotDepth(kFxRhythmSlot))
 				                 * kStutterRange >> 12);
 				TriggerVoice(lastVoice_);
 				FlashVoice(lastVoice_);
@@ -1738,8 +1773,6 @@ private:
 	/// Each slot's replayed parameter curve. A position, not a hold, so it
 	/// does not expire — it stays until the next recorded point moves it.
 	int32_t  fxParPlayback_[kNumFxSlots] = { 2048, 2048, 2048, 2048 };
-	/// Half-time alternates this, advancing the loop on every other tick.
-	bool     halfPhase_ = false;
 	/// The last voice the loop fired, for STUTTER to repeat.
 	int8_t   lastVoice_    = -1;
 	int32_t  stutterTicks_ = 0;

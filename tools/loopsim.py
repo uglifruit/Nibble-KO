@@ -26,8 +26,19 @@ MAX_KNOB_EVENTS = 192
 KNOB_EVENT = 0x80
 THIS_PASS = 0x40
 KNOB_REPLACE_WINDOW = 12
-NUM_LANES = 2
-LANE_FILTER, LANE_TONE = 0, 1
+# Must stay a POWER OF TWO: lane_of() masks with NUM_LANES-1, so three lanes
+# need four slots. Mirrors looper.h's KnobLane.
+NUM_LANES = 4
+LANE_FILTER, LANE_TONE, LANE_FX = 0, 1, 2
+
+
+def pack_fx(fx, depth):
+    """Four bits of effect index, four of depth. Mirrors looper.h's PackFx."""
+    return ((fx << 4) | ((depth >> 8) & 0x0F)) & 0xFF
+
+
+def fx_of(v):       return v >> 4
+def fx_depth_of(v): return (v & 0x0F) << 8
 
 
 def is_knob(what):
@@ -191,7 +202,16 @@ class Looper:
                 i += 1
         if self.knob_count >= MAX_KNOB_EVENTS:
             return
-        self.insert([self.play_head, what | THIS_PASS, value])
+        # `value` here is the STORED byte, i.e. already knob>>4. The C++ does
+        # that shift inside RecordLane; record_knob_at() below is the faithful
+        # mirror of it. This entry point takes the stored form because most
+        # tests care about replacement and ordering rather than scaling.
+        self.insert([self.play_head, what | THIS_PASS, value & 0xFF])
+
+    def record_knob_at(self, knob, lane=LANE_FILTER):
+        """Mirrors the C++ RecordLane: takes a 0..4095 knob value and stores
+        knob>>4, because LoopEvent::value is a single byte."""
+        self.record_filter_at((knob >> 4) & 0xFF, lane)
 
     def record_hit(self, voice, vel=100):
         # A hit the player just performed outranks stale automation.
@@ -725,6 +745,53 @@ def test_undo_does_not_replay_the_bar_so_far():
           [c for (_t, c) in fired], [3])
 
 
+def test_fx_packing_round_trip():
+    """An FX lane event carries WHICH effect and HOW DEEP in one byte, and it
+    has to survive the same value>>4 / <<4 round trip the knob lanes use.
+
+    Depth deliberately loses resolution -- 4095 becomes 16 steps. What must
+    NOT be lost is the effect index, because landing on the wrong one plays a
+    completely different effect rather than a slightly wrong one.
+    """
+    for fx in range(12):
+        for depth in (0, 255, 256, 2048, 4095):
+            packed = pack_fx(fx, depth)
+            # The lane stores value>>4 after being handed value<<4.
+            stored = (packed << 4) >> 4
+            check("fx pack: effect %d survives depth %d" % (fx, depth),
+                  fx_of(stored), fx)
+            # Depth quantises DOWN to a multiple of 256, never up past 4095.
+            d = fx_depth_of(stored)
+            check("fx pack: depth %d stays in range" % depth,
+                  0 <= d <= 3840, True)
+
+
+def test_fx_lane_records_while_held():
+    """The FX lane writes whenever an effect is HELD, unlike a knob lane which
+    only writes while MOVING. Holding one steady is exactly what has to be
+    captured -- otherwise playback starts the effect and never stops it."""
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+
+    # Three samples of the same effect at the same depth, as a hold produces.
+    #
+    # main.cpp hands RecordKnobs the packed byte scaled <<4, because the lane
+    # stores value>>4 -- that round trip is what keeps the byte intact. The
+    # test has to do the same or it is testing a call that never happens.
+    packed = pack_fx(3, 2048)
+    for t in (0, 8, 16):
+        lp.play_head = t
+        lp.record_knob_at(packed << 4, LANE_FX)
+
+    fx_events = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX]
+    check("fx lane: a steady hold still records", len(fx_events) >= 1, True)
+    # What comes back out of the event IS the packed byte, so unpack directly.
+    check("fx lane: it stored the right effect",
+          fx_of(fx_events[0][2]), 3)
+    check("fx lane: ...and the right depth",
+          fx_depth_of(fx_events[0][2]), 2048)
+
+
 def main():
     print("NIBBLE looper model")
     print()
@@ -748,6 +815,8 @@ def main():
     test_undo_is_one_way()
     test_undo_with_no_snapshot()
     test_undo_does_not_replay_the_bar_so_far()
+    test_fx_packing_round_trip()
+    test_fx_lane_records_while_held()
     print()
     if FAILURES:
         print("%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

@@ -34,8 +34,39 @@ struct LoopEvent
 /// which knob, so both lanes share one code path.
 constexpr uint8_t kKnobEvent = 0x80;
 
-/// The automated knobs. Main is the DJ filter; Y is the kit character.
-enum KnobLane : uint8_t { kLaneFilter = 0, kLaneTone = 1, kNumLanes = 2 };
+/// The automation lanes.
+///
+/// The first two are knobs. The third is the performance EFFECT, which is
+/// recorded as a PARAMETER rather than as knob movement — "crush at depth
+/// 900", not "the Main knob is at 900". That distinction matters because in
+/// FX1 the Main knob IS the depth, so recording it as a knob would write the
+/// same movement into the filter lane and replay a filter sweep that never
+/// happened. Recording what the effect WAS sidesteps that entirely.
+///
+/// kNumLanes must stay a POWER OF TWO: LaneOf() masks with kNumLanes-1, so
+/// three lanes need four slots. The fourth is spare.
+enum KnobLane : uint8_t {
+	kLaneFilter = 0,   ///< Main knob -> DJ filter
+	kLaneTone   = 1,   ///< Y knob -> kit character
+	kLaneFx     = 2,   ///< which effect is active, and how deep
+	kNumLanes   = 4    ///< a power of two, for LaneOf()'s mask
+};
+
+/// How an FX lane event packs into LoopEvent::value.
+///
+/// Four bits of effect index (twelve effects fit in sixteen) and four bits of
+/// depth. Depth loses resolution — 4095 becomes 16 steps — and that is an
+/// accepted trade: the alternative is a second event per sample, doubling the
+/// automation cost of the densest thing on the card for a precision nobody
+/// can hear on a bit-crusher.
+///
+/// Zero means NO EFFECT, which is why Fx::None must stay index 0.
+static inline uint8_t PackFx(uint8_t fx, int32_t depth)
+{
+	return static_cast<uint8_t>((fx << 4) | ((depth >> 8) & 0x0F));
+}
+static inline uint8_t FxOf(uint8_t v)      { return static_cast<uint8_t>(v >> 4); }
+static inline int32_t FxDepthOf(uint8_t v) { return (v & 0x0F) << 8; }
 
 /// Marks an automation event as belonging to the CURRENT recording pass.
 ///
@@ -178,11 +209,20 @@ public:
 	/// records nothing at all, so it can never overwrite an earlier sweep with a
 	/// flat line.
 	///
-	/// Both lanes are taken together rather than each managing its own timer,
+	/// All lanes are taken together rather than each managing its own timer,
 	/// because a shared countdown consumed by whichever lane asked first would
-	/// starve the other completely.
+	/// starve the others completely.
+	///
+	/// The FX lane differs from the two knob lanes in one way that matters:
+	/// it writes whenever an effect is ACTIVE, not only when something is
+	/// "moving". An effect being held steady is information — it has to be
+	/// recorded for every tick it is held, or playback would turn it on and
+	/// then never off. `fxPacked` of 0 means no effect, which records nothing
+	/// and so leaves any earlier pass's effect alone, exactly as a still knob
+	/// does.
 	void RecordKnobs(bool filterMoving, int32_t filterKnob,
-	                 bool toneMoving,   int32_t toneKnob);
+	                 bool toneMoving,   int32_t toneKnob,
+	                 uint8_t fxPacked);
 
 	/// Called when record is armed or released. Drops the knob reference so the
 	/// next RecordKnob() re-seeds instead of comparing against a stale value

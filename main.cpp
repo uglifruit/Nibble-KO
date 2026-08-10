@@ -180,6 +180,20 @@ constexpr int32_t kGateSamples = kSampleRate / 200;
 /// a note, and at 240bpm the beats are only a quarter of a second apart.
 constexpr int32_t kClickSamples = kSampleRate / 500;   // 2ms
 
+/// How long a replayed effect survives without a fresh event, in LOOP TICKS.
+///
+/// The FX lane samples every kKnobSampleTicks (8) while an effect is held, so
+/// a gap longer than that means the hold ended. Two sample intervals gives
+/// slack for the recording and playback grids not lining up, without leaving
+/// the effect hanging audibly past where it was released.
+///
+/// LOOP ticks, not control ticks, and the distinction is not academic: eight
+/// loop ticks is 42ms at 240bpm but 250ms at 40bpm, which is 125 versus 750
+/// control ticks. A fixed control-tick figure would either expire instantly
+/// at slow tempos or hang on for a quarter of a second at fast ones. This is
+/// therefore counted down where the loop advances, not on the control tick.
+constexpr int32_t kFxPlaybackHold = 2 * kKnobSampleTicks;
+
 /// The gap between a flam's two strikes, in control ticks.
 ///
 /// ~13ms at 3kHz. A flam is a grace note, not an echo: far enough apart to be
@@ -833,11 +847,8 @@ private:
 		fxCurrent_ = Fx::None;
 
 		// Not while the switch is down — those presses are choosing a mode.
-		if (selectArmed_)
-		{
-			fx_.Set(Fx::None, 0);
-			return;
-		}
+		// fxLive_ is already false, so the caller falls through to playback.
+		if (selectArmed_) return;
 
 		if (mode_ == Mode::Fx1)
 		{
@@ -858,7 +869,8 @@ private:
 						fxHeld_ = static_cast<uint8_t>(1u << tap);
 				}
 			}
-			fx_.Set(fxCurrent_, filterLane_.Value());
+			fxDepth_ = filterLane_.Value();
+			fxLive_  = (fxCurrent_ != Fx::None);
 			return;
 		}
 
@@ -912,7 +924,28 @@ private:
 		// FX are momentary: an effect lasts exactly as long as its button is
 		// held, so it is read as STATE every tick rather than latched on an
 		// edge.
+		fxLive_ = false;
 		if (mode_ == Mode::Fx1 || mode_ == Mode::Fx2) FxUpdate();
+
+		// (A recorded effect expires in LOOP ticks, counted down where the
+		// loop advances — see kFxPlaybackHold.)
+
+		// THE HAND WINS. Same rule the knob lanes use: while you are holding
+		// an effect it is yours, and the recording is muted underneath rather
+		// than fighting it. Let go and the pattern's own effect returns.
+		if (fxLive_)
+		{
+			fx_.Set(fxCurrent_, fxDepth_);
+		}
+		else if (fxPlayback_ != 0)
+		{
+			fx_.Set(static_cast<Fx>(FxOf(fxPlayback_)),
+			        FxDepthOf(fxPlayback_));
+		}
+		else
+		{
+			fx_.Set(Fx::None, 0);
+		}
 
 		loop_.SetTempo(KnobVal(Knob::X));
 
@@ -936,9 +969,18 @@ private:
 
 		// Record only what the HAND is doing. Recording the value that came
 		// out of the lane would re-record playback on top of itself.
+		//
+		// The filter lane is silenced while FX1 owns the Main knob: that
+		// movement is the effect's depth, and writing it to the filter lane
+		// would replay a filter sweep that never actually happened. The
+		// effect itself is recorded instead, as a PARAMETER — see below.
 		if (recording_)
-			loop_.RecordKnobs(filterLane_.HandOwns(), KnobVal(Knob::Main),
-			                  toneLane_.HandOwns(),   KnobVal(Knob::Y));
+			loop_.RecordKnobs(filterLane_.HandOwns() && !mainIsDepth,
+			                  KnobVal(Knob::Main),
+			                  toneLane_.HandOwns(), KnobVal(Knob::Y),
+			                  fxLive_ ? PackFx(static_cast<uint8_t>(fxCurrent_),
+			                                   fxDepth_)
+			                          : 0);
 
 		if (!playing_) return;
 
@@ -963,6 +1005,11 @@ private:
 		for (int a = 0; a < advances; a++)
 		if (loop_.Advance())
 		{
+			// A replayed effect expires in LOOP ticks, so it is aged HERE
+			// rather than on the control tick — see kFxPlaybackHold for why
+			// the distinction matters across the tempo range.
+			if (fxPlaybackTicks_ > 0 && --fxPlaybackTicks_ == 0) fxPlayback_ = 0;
+
 			// Pulse Out 2 is a CLICK TRACK: one blip per crotchet, so you have
 			// something to record along to. Driven from BeatEdge() rather than
 			// OnBeat() — the latter is a level that stays true for the whole
@@ -982,6 +1029,17 @@ private:
 			// this is remembered but muted until they let go.
 			if (haveKnob[kLaneFilter]) filterLane_.Playback(knob[kLaneFilter]);
 			if (haveKnob[kLaneTone])   toneLane_.Playback(knob[kLaneTone]);
+
+			// The FX lane is a LEVEL, not an edge: an effect is recorded for
+			// every tick it was held, so a tick that carries no FX event means
+			// the effect had stopped. Latch what arrived and let it expire, so
+			// the gap between recorded samples does not chatter the effect on
+			// and off at the sampling rate.
+			if (haveKnob[kLaneFx])
+			{
+				fxPlayback_      = static_cast<uint8_t>(knob[kLaneFx] >> 4);
+				fxPlaybackTicks_ = kFxPlaybackHold;
+			}
 
 			for (int i = 0; i < n; i++)
 			{
@@ -1569,7 +1627,13 @@ private:
 
 	// --- performance effects (FX1) ---------------------------------------
 	FxRack   fx_;
-	Fx       fxCurrent_ = Fx::None;
+	Fx       fxCurrent_ = Fx::None;   ///< the effect the HAND is holding
+	int32_t  fxDepth_   = 2048;       ///< its depth, from the Main knob
+	bool     fxLive_    = false;      ///< true while the hand holds one
+	/// The effect the LOOP is replaying, packed as fx<<4 | depth>>8. Zero
+	/// when the recorded pass is not holding anything.
+	uint8_t  fxPlayback_      = 0;
+	int32_t  fxPlaybackTicks_ = 0;
 	/// Half-time alternates this, advancing the loop on every other tick.
 	bool     halfPhase_ = false;
 	/// The last voice the loop fired, for STUTTER to repeat.

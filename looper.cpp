@@ -202,11 +202,12 @@ void Looper::RecordHit(int8_t voice, uint8_t velocity)
 }
 
 void Looper::RecordKnobs(bool filterMoving, int32_t filterKnob,
-                         bool toneMoving,   int32_t toneKnob)
+                         bool toneMoving,   int32_t toneKnob,
+                         uint8_t fxPacked)
 {
-	// One countdown for BOTH lanes, checked once and reset once. Letting each
+	// One countdown for ALL lanes, checked once and reset once. Letting each
 	// lane test and consume it separately would mean whichever asked first ate
-	// the whole interval and the other never recorded at all.
+	// the whole interval and the others never recorded at all.
 	if (knobCountdown_ > 0) return;
 	knobCountdown_ = kKnobSampleTicks;
 
@@ -215,6 +216,13 @@ void Looper::RecordKnobs(bool filterMoving, int32_t filterKnob,
 	// existing sweep into a straight line just by being armed.
 	if (filterMoving) RecordLane(kLaneFilter, filterKnob);
 	if (toneMoving)   RecordLane(kLaneTone,   toneKnob);
+
+	// The FX lane writes whenever an effect is HELD, not only when something
+	// moved — holding one steady is exactly what has to be captured, or
+	// playback would start the effect and never stop it. RecordLane takes a
+	// 0..4095 knob value and stores value>>4, so the packed byte is scaled up
+	// here to survive that round trip intact.
+	if (fxPacked != 0) RecordLane(kLaneFx, static_cast<int32_t>(fxPacked) << 4);
 }
 
 /// Is `tick` within the replace window of the playhead, the short way round?

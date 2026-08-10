@@ -22,6 +22,8 @@ tags:
   - drums
   - looper
   - sample-player
+  - effects
+  - performance
   - four-voltages
   - webmidi
 
@@ -44,11 +46,26 @@ summary: |
   and 5 when two captures are too close; move the knob and run it again
   rather than playing around it.<br><br>
 
-  IN DEVELOPMENT. Drums, the four-bar looper, mute groups, twelve performance
-  effects and sample playback all work on hardware. Calibration is not yet
-  saved to flash, so the card recalibrates at every power-up, and the browser
-  sample manager is not written. See the repository's CLAUDE.md for what
-  exists and what is still designed.
+  The momentary switch is a MODE SELECTOR rather than a trigger. Hold it and
+  press a button to choose - drums, mute groups, or twelve performance
+  effects - then Middle plays that mode and Up records it. Because the mode
+  latches, everything is recorded through one mechanism.<br><br>
+
+  THE EFFECTS are four banks of three, the shift picking the family: filters,
+  destruction (crush, decimate, wavefold), rhythmic (stutter, flam, gate) and
+  transport (reverse, tape-stop, silence). Up to four layer at once, in
+  series. The transport bank means different things to different voices - a
+  sample plays backwards where a synthesised voice runs its ENVELOPE
+  backwards, a swell instead of a decay - so one press gives backwards kick
+  and hats over swelling toms at the same time. Each shift records two lanes,
+  the effect and its own parameter curve, so a sweep can be drawn once and
+  effects punched in and out over the top of it.<br><br>
+
+  IN DEVELOPMENT. Drums, the four-bar looper, mute groups, the effects and
+  sample playback all work on hardware. Calibration is not yet saved to
+  flash, so the card recalibrates at every power-up; the browser sample
+  manager is not written; and one mode slot is still unassigned. See the
+  repository's CLAUDE.md for what exists and what is still designed.
 
 panel:
   inputs:
@@ -98,27 +115,27 @@ controls:
   switch:
     up:
       name: Record
-      description: Record and overdub into the loop; the loop keeps running, and because it stores events rather than audio, overdubbing never degrades what is already there.
+      description: Play the current mode AND record it. Drum hits, mute toggles, effects and knob movements are all captured the same way. The loop stores events rather than audio, so overdubbing never degrades what is already there.
     middle:
       name: Play
-      description: The loop plays, and you can play along without recording.
+      description: Play the current mode without recording.
     down:
-      name: Calibrate
-      description: Calibration starts automatically at power-on, since the learned levels are never saved. Hold for two seconds to start another at any time, or to abort one in progress.
+      name: Mode select
+      description: "Hold DOWN and press a button to choose a mode; the choice lands when you RELEASE, and then LATCHES, so Down and Up never need to be held at once. A: drums. B: mute groups. C: twelve performance effects. D: unassigned. With a PAIR held it fires a one-shot instead - A+B undo, C+D play/stop, A+C the browser setup, A+D quantise (the last two are not implemented yet). Commit-on-release exists because Four Voltages holds its last voltage: the CV may already be sitting on the button you want, so a press-driven select would never fire."
     tap:
-      name: Retrigger
-      description: Re-strikes the bass note the held single button is playing.
+      name: Capture (during calibration)
+      description: While calibrating, tap to capture the combination you are holding. Outside calibration a tap is just a short mode-select gesture and does nothing on its own.
   knobs:
     -
       main:
-        name: DJ Filter
-        description: Low-pass to the left, high-pass to the right, with a generous bypass at centre. Its movements are recorded into the loop.
+        name: DJ Filter / FX depth
+        description: "In DRUMS and MUTE it is a DJ filter - low-pass to the left, high-pass to the right, generous bypass at centre. In FX mode it becomes the held effect's depth instead, and the filter latches where it was, picking up again only when the knob is turned back through that value so leaving the mode never jumps it. Movements are recorded into the loop; in FX mode each shift has its own parameter curve, so holding a shift alone and turning Main draws that lane's automation."
       x:
         name: Tempo
         description: 40 to 240 BPM, ignored while an external clock is running on Pulse In 1.
       y:
         name: Kit character
-        description: Reshapes the whole kit at once when a voice is struck. What this does to a sample-backed voice is undecided - see repository docs.
+        description: Reshapes the whole kit at once when a voice is struck - anticlockwise lower and longer, clockwise higher and shorter. On a synthesised voice that is pitch and decay; on a sampled one it is playback rate, which couples the two the way tape does. Applied at the moment of striking, so sweeping it never warps a sound already ringing.
   leds:
     -
       display: list

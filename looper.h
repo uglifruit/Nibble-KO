@@ -143,6 +143,11 @@ constexpr int kQuantTicks = kTicksPerBeat / 4;                 // 12
 
 constexpr int kMaxEvents = 512;
 
+/// How many patterns can be stored. Four, one per button — the gesture is
+/// hold-a-shift-and-tap like everything else, so the count follows the panel
+/// rather than being a number someone picked.
+constexpr int kNumPatterns = 4;
+
 /// Filter automation may never occupy more than this many slots.
 ///
 /// This is a HARD budget, and it exists because automation and hits compete for
@@ -333,6 +338,35 @@ public:
 	/// True when there is a snapshot to go back to.
 	bool CanUndo() const { return haveSnapshot_; }
 
+	// --- pattern slots -----------------------------------------------------
+	//
+	// Four stored patterns, recalled instantly and overwritten deliberately.
+	// 8KB of RAM, which is affordable at ~15% total and buys the one thing a
+	// four-bar looper most obviously lacks: somewhere to put a second idea.
+	//
+	// Recall REPLACES the live loop without saving it. That is the whole
+	// reason storing is a separate, deliberate gesture (a long hold): if
+	// switching away saved automatically there would be no way to try
+	// something and abandon it, and every overdub would be committed whether
+	// or not you meant it. Undo still covers one step back.
+
+	/// Copy the live loop into slot `i`.
+	void StorePattern(int i);
+
+	/// Load slot `i` over the live loop. The PLAYHEAD IS NOT MOVED — the new
+	/// pattern picks up from wherever in the bar you already are, so
+	/// switching mid-bar is seamless rather than a restart.
+	///
+	/// Does nothing if the slot is empty; returns false so the caller can say
+	/// so rather than silently clearing the loop.
+	bool RecallPattern(int i);
+
+	/// True if slot `i` holds anything.
+	bool PatternStored(int i) const
+	{
+		return i >= 0 && i < kNumPatterns && patternCount_[i] > 0;
+	}
+
 	uint16_t Position() const   { return playHead_; }
 	uint16_t EventCount() const { return count_; }
 	bool     Full() const       { return count_ >= kMaxEvents; }
@@ -379,6 +413,13 @@ private:
 	uint16_t  snapshotCount_    = 0;
 	uint16_t  snapshotKnobCount_ = 0;
 	bool      haveSnapshot_     = false;
+
+	// --- pattern slots ----------------------------------------------------
+	// 8KB. Flat arrays rather than anything clever: a pattern is exactly what
+	// events_ is, so storing one is a copy and recalling it is a copy back.
+	LoopEvent pattern_[kNumPatterns][kMaxEvents] = {};
+	uint16_t  patternCount_[kNumPatterns] = {};
+	uint16_t  patternKnobCount_[kNumPatterns] = {};
 
 	int32_t  phase_   = 0;      ///< Q16 fraction of a tick
 	int32_t  tickInc_ = 0;      ///< Q16 ticks per control step

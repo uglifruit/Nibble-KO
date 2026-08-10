@@ -7,10 +7,10 @@ module — with a browser sample manager.**
 *Four buttons. Ten voltages. Twelve drums, yours to fill.*
 
 > **Status: in development, playable on hardware.** Drums, the looper, mute
-> groups, twelve performance effects and sample playback all work. Calibration
-> is not yet saved to flash, so the card recalibrates on every power-up, and
-> the browser sample manager is not written. See [CLAUDE.md](CLAUDE.md) for
-> exactly what's here and what isn't.
+> groups, twelve performance effects, four pattern slots and sample playback
+> all work. Calibration and patterns are not yet saved to flash, so both are
+> lost at power-off, and the browser app is not written. See
+> [CLAUDE.md](CLAUDE.md) for exactly what's here and what isn't.
 
 A program card for the [Music Thing Modular Workshop System
 Computer](https://www.musicthing.co.uk/workshopsystem/) that expands the
@@ -54,7 +54,7 @@ what lets every mode be recorded through one mechanism.
 | **A** | **Drums** — the kit (where you start) |
 | **B** | **Mute** — three mute groups |
 | **C** | **FX** — twelve performance effects |
-| **D** | *(unassigned — see below)* |
+| **D** | **Pattern** — four stored loops |
 
 And with a **pair** held, one-shot actions:
 
@@ -87,6 +87,21 @@ Hold **B**, tap **A**, **C** or **D** to toggle one of three mute groups. The
 pads show each group's hits going past — full brightness when it sounds, half
 when it is muted, so you can see the pattern you have silenced and time
 bringing it back.
+
+### Pattern
+
+Four slots. **Tap** a button to recall that pattern — instantly, keeping the
+playhead where it is, so switching mid-bar reads as the band changing part
+rather than a stop and start. **Hold** a button for a second to store the
+live loop into it.
+
+The pads show three states: **full** is the pattern playing, **half** is a
+slot with something in it, **dark** is empty — so what you can jump to is
+readable at a glance.
+
+Recalling **discards** whatever you were playing. That is deliberate, and it
+is why storing is a separate hold: it means you can try something over a
+pattern and abandon it. (Undo still gets you back one step.)
 
 ### FX — twelve effects, four banks
 
@@ -199,7 +214,9 @@ browser will be able to re-point it at runtime. See
   flash write is the next substantial piece of work.
 - **No browser sample manager.** The USB/SysEx layer is a stub, so samples are
   baked at build time rather than uploaded.
-- **Mode D is unassigned** and **Quantise does nothing** yet.
+- **Quantise does nothing** yet.
+- **Patterns are RAM only** — they do not survive a power cycle. Getting
+  them in and out over the web app is the next natural step.
 - **Mute groups are hardcoded** three ways by voice index, pending the WebUI
   that would assign them.
 

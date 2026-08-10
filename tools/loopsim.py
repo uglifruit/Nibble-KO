@@ -262,6 +262,29 @@ class Looper:
         self.snap_knob_count = self.knob_count
         self.have_snap = True
 
+    # --- pattern slots ----------------------------------------------------
+
+    def store_pattern(self, i):
+        if not hasattr(self, "patterns"):
+            self.patterns = {}
+        self.patterns[i] = ([list(e) for e in self.events], self.knob_count)
+
+    def recall_pattern(self, i):
+        pats = getattr(self, "patterns", {})
+        if i not in pats or not pats[i][0]:
+            return False
+        evs, kc = pats[i]
+        self.events = [list(e) for e in evs]
+        self.knob_count = kc
+
+        # The playhead is deliberately NOT moved. The cursor must be rebuilt
+        # from it for the same reason undo's must -- see there.
+        self.cursor = 0
+        while (self.cursor < len(self.events)
+               and fire_tick(self.events[self.cursor]) < self.play_head):
+            self.cursor += 1
+        return True
+
     def undo(self):
         """Restore the snapshot. Consumed, so a second undo is a no-op."""
         if not getattr(self, "have_snap", False):
@@ -761,6 +784,71 @@ def test_undo_does_not_replay_the_bar_so_far():
           [c for (_t, c) in fired], [3])
 
 
+def test_pattern_recall_keeps_the_playhead():
+    """Recall swaps the pattern WITHOUT moving the playhead, so switching
+    mid-bar reads as the band changing part rather than a stop and start.
+
+    The cursor is an index into an array that has just been replaced, so it
+    has to be rebuilt from the playhead -- exactly the trap undo has. Reset
+    it to zero instead and every event between the loop start and here fires
+    at once, which is a burst of the first half of the pattern on the tick
+    you switched.
+    """
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+
+    # Slot 0: hits early and late in the bar.
+    lp.play_head = 0;   lp.record_hit(1)
+    lp.play_head = 600; lp.record_hit(2)
+    lp.store_pattern(0)
+
+    # Slot 1: a different pattern, same shape.
+    lp.clear()
+    lp.play_head = 100; lp.record_hit(5)
+    lp.play_head = 700; lp.record_hit(6)
+    lp.store_pattern(1)
+
+    # Play into the middle of the bar, then switch.
+    lp.play_head = 400
+    check("pattern: recall reports success", lp.recall_pattern(0), True)
+    check("pattern: playhead did not move", lp.play_head, 400)
+    check("pattern: nothing fires on the switch tick", lp.fire(), [])
+
+    # Only the hit still AHEAD of 400 should fire this pass.
+    fired = []
+    while lp.play_head < LOOP_TICKS - 1:
+        lp.play_head += 1
+        for ev in lp.fire():
+            fired.append(ev[0])
+    check("pattern: only events ahead of the playhead fire", fired, [2])
+
+
+def test_pattern_recall_of_empty_slot_is_a_noop():
+    """Tapping an empty slot must leave the loop alone. Silently wiping what
+    you are playing is not something a tap should ever do."""
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+    lp.play_head = 0; lp.record_hit(3)
+    before = [list(e) for e in lp.events]
+
+    check("pattern: empty slot reports failure", lp.recall_pattern(2), False)
+    check("pattern: ...and changes nothing", lp.events, before)
+
+
+def test_pattern_store_is_a_snapshot():
+    """A stored pattern is a COPY -- carrying on playing must not alter it."""
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+    lp.play_head = 0; lp.record_hit(1)
+    lp.store_pattern(0)
+
+    lp.play_head = 300; lp.record_hit(9)      # overdub after storing
+    check("pattern: live loop grew", len(lp.events), 2)
+
+    lp.recall_pattern(0)
+    check("pattern: the stored copy was untouched", len(lp.events), 1)
+
+
 def test_undo_restores_every_lane():
     """Undo must put back ALL of it -- hits, filter, tone, the four effect
     lanes and the four parameter lanes -- not just the drum hits.
@@ -929,6 +1017,9 @@ def main():
     test_undo_is_one_way()
     test_undo_with_no_snapshot()
     test_undo_does_not_replay_the_bar_so_far()
+    test_pattern_recall_keeps_the_playhead()
+    test_pattern_recall_of_empty_slot_is_a_noop()
+    test_pattern_store_is_a_snapshot()
     test_undo_restores_every_lane()
     test_fx_packing_round_trip()
     test_fx_lane_records_while_held()

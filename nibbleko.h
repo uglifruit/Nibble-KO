@@ -132,8 +132,8 @@ static inline uint8_t ComboLedMask(int8_t combo)
 enum class Mode : uint8_t {
 	Drums   = 0,   ///< the kit, played as NIBBLE's DRUMS. Power-on default.
 	Mute    = 1,   ///< three mute-group toggles
-	Fx1     = 2,   ///< audio effects: reverse / tape-stop / pitch
-	Fx2     = 3,   ///< timing effects: flam / stutter / triplet
+	Fx      = 2,   ///< twelve performance effects, four banks of three
+	Pattern = 3,   ///< four stored patterns: tap recalls, hold stores
 	WebUi   = 4,   ///< USB/browser setup. A doorway, not a performance mode.
 	kNumModes = 5
 };
@@ -143,8 +143,8 @@ enum class Mode : uint8_t {
 constexpr Mode kModeForSingle[kNumSingles] = {
 	Mode::Drums,   // A
 	Mode::Mute,    // B
-	Mode::Fx1,     // C
-	Mode::Fx2,     // D
+	Mode::Fx,      // C
+	Mode::Pattern, // D
 };
 
 /// The one-shot actions reached by switch+PAIR. Not modes: they fire and

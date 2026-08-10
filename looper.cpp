@@ -390,6 +390,45 @@ void Looper::Snapshot()
 	haveSnapshot_      = true;
 }
 
+// ---------------------------------------------------------------------------
+// Pattern slots
+// ---------------------------------------------------------------------------
+
+void Looper::StorePattern(int i)
+{
+	if (i < 0 || i >= kNumPatterns) return;
+	for (uint16_t k = 0; k < count_; k++) pattern_[i][k] = events_[k];
+	patternCount_[i]     = count_;
+	patternKnobCount_[i] = knobCount_;
+}
+
+bool Looper::RecallPattern(int i)
+{
+	if (i < 0 || i >= kNumPatterns) return false;
+	if (patternCount_[i] == 0)      return false;   // empty: say so
+
+	for (uint16_t k = 0; k < patternCount_[i]; k++) events_[k] = pattern_[i][k];
+	count_     = patternCount_[i];
+	knobCount_ = patternKnobCount_[i];
+
+	// THE PLAYHEAD IS NOT TOUCHED. Switching patterns mid-bar should feel
+	// like the band changing part, not like hitting stop and start — so the
+	// new pattern picks up wherever the bar already is.
+	//
+	// The cursor, though, is an index into an array that has just been
+	// replaced, so it means nothing now. Rebuild it from the playhead: the
+	// array is sorted by fire time, so the first event at or after the
+	// playhead is where the walk in Fire() should resume. Resetting it to
+	// zero instead would re-fire everything between the loop start and here,
+	// all on this one tick — the same trap Undo() has, and worth stating
+	// twice because it is silent when wrong.
+	cursor_ = 0;
+	while (cursor_ < count_ && FireTick(events_[cursor_]) < playHead_) cursor_++;
+
+	for (int k = 0; k < kNumLanes; k++) lastKnob_[k] = -9999;
+	return true;
+}
+
 bool Looper::Undo()
 {
 	if (!haveSnapshot_) return false;

@@ -23,16 +23,24 @@
 // selection is a transient Down-gesture that has finished by the time you
 // reach Up, so Down and Up never need to be held at once.
 //
-//   switch+A  DRUMS   the kit (power-on default)
-//   switch+B  MUTE    three mute-group toggles
-//   switch+C  FX1     audio effects
-//   switch+D  FX2     timing effects
+//   switch+A  DRUMS    the kit (power-on default)
+//   switch+B  MUTE     three mute-group toggles
+//   switch+C  FX       twelve performance effects
+//   switch+D  PATTERN  four stored loops: tap recalls, hold stores
 //
 // Inside a mode, THE MODE'S OWN BUTTON IS THE SHIFT — the same hold-and-tap
 // mechanic the kit is played with, so the whole card is one gesture:
 //
-//   MUTE   hold B, tap A / C / D     toggle mute group 1 / 2 / 3
-//   FX2    hold D, hold A / B / C    effect 1 / 2 / 3, while held
+//   MUTE     hold B, tap A / C / D    toggle mute group 1 / 2 / 3
+//   PATTERN  tap A / B / C / D        recall that slot, instantly
+//            HOLD A / B / C / D       store the live loop into it
+//
+// A pattern recall does NOT move the playhead: the new loop picks up wherever
+// in the bar you already are, so switching mid-bar reads as the band changing
+// part rather than a stop and start. Storing is a deliberate hold because it
+// overwrites irreversibly and Undo does not cover it — and because recall
+// DISCARDS whatever you were playing, which is what makes it possible to try
+// something and abandon it.
 //
 // FX1 goes further: ANY single is a shift there, so it carries TWELVE
 // effects rather than three — four shifts by three taps, exactly as the kit
@@ -212,6 +220,22 @@ constexpr int32_t kClickSamples = kSampleRate / 500;   // 2ms
 /// at slow tempos or hang on for a quarter of a second at fast ones. This is
 /// therefore counted down where the loop advances, not on the control tick.
 constexpr int32_t kFxPlaybackHold = 2 * kKnobSampleTicks;
+
+/// How long a pattern button must be held to STORE rather than recall.
+///
+/// One second. Long enough that a recall tap cannot reach it by accident —
+/// storing overwrites a slot irreversibly, and Undo does not cover it — but
+/// short enough not to feel like the card has stopped responding. Half the
+/// switch's own hold threshold, since the consequence here is smaller than
+/// throwing away a calibration.
+constexpr int32_t kPatternHoldTicks = kCtrlRate;
+
+/// How long a store is acknowledged on the pads.
+///
+/// A store has no audible result whatsoever — the loop carries on playing
+/// exactly as it was — so without this there is no way to tell it happened
+/// from the gesture having missed.
+constexpr int32_t kPatternFlashTicks = (kCtrlRate * 2) / 5;   // 400ms
 
 /// How long a TAPE STOP takes to wind down, in audio samples.
 ///
@@ -676,9 +700,10 @@ private:
 		{
 		case Mode::Drums:  DrumsPress(combo); break;
 		case Mode::Mute:   MutePress(combo);  break;
-		// FX are momentary and read as state in FxUpdate(), not on this edge.
-		case Mode::Fx1:
-		case Mode::Fx2:
+		// FX are momentary and PATTERN needs hold duration, so both are read
+		// as state each tick rather than on this edge.
+		case Mode::Fx:
+		case Mode::Pattern:
 		case Mode::WebUi:
 		default:                              break;
 		}
@@ -850,8 +875,7 @@ private:
 		switch (mode_)
 		{
 		case Mode::Mute: return kB;
-		case Mode::Fx1:  return kC;
-		case Mode::Fx2:  return kD;
+		case Mode::Fx:   return kC;
 		default:         return kComboNone;
 		}
 	}
@@ -912,7 +936,7 @@ private:
 		// fxLiveSlot_ is already -1, so the caller falls through to playback.
 		if (selectArmed_) return;
 
-		if (mode_ == Mode::Fx1)
+		if (mode_ == Mode::Fx)
 		{
 			// TWO gestures share the four buttons here, told apart by whether
 			// a pair or a bare single is held:
@@ -997,6 +1021,53 @@ private:
 		// here would answer it by accident. See the file header.
 	}
 
+	// --- PATTERN ---------------------------------------------------------
+
+	/// Four stored patterns: TAP a button to recall it, HOLD to store into it.
+	///
+	/// Read as state rather than on a trigger edge, because the two gestures
+	/// differ only in how long the button stays down — the same reason the
+	/// switch's own tap and hold are timed rather than latched.
+	///
+	/// The recall fires on RELEASE, not on the way down. That is what keeps
+	/// the two apart: a hold has to be able to pass the store threshold
+	/// without having already recalled something on its way there.
+	void __not_in_flash_func(PatternUpdate)()
+	{
+		const int8_t cur = levels_.Current();
+		const bool   single = (cur >= 0 && cur < kNumSingles);
+
+		if (single && cur == patHeld_)
+		{
+			// Still holding the same button. Count towards the store, and
+			// fire it exactly once when the threshold is crossed.
+			if (patHeldTicks_ < kPatternHoldTicks) patHeldTicks_++;
+			if (patHeldTicks_ >= kPatternHoldTicks && !patStored_)
+			{
+				patStored_      = true;
+				patLastStored_  = cur;
+				patStoreFlash_  = kPatternFlashTicks;
+				loop_.StorePattern(cur);
+				patLive_ = cur;      // what you stored is what is now playing
+			}
+			return;
+		}
+
+		// The held button changed or was released.
+		if (patHeld_ >= 0 && !patStored_ && patHeldTicks_ > 0)
+		{
+			// Released before the store threshold: a TAP, so recall.
+			// An empty slot is left alone rather than clearing the loop —
+			// silently wiping what you are playing is not something a tap
+			// should ever do.
+			if (loop_.RecallPattern(patHeld_)) patLive_ = patHeld_;
+		}
+
+		patHeld_      = single ? cur : -1;
+		patHeldTicks_ = 0;
+		patStored_    = false;
+	}
+
 	// --- shared control -------------------------------------------------
 
 	void __not_in_flash_func(PlayControl)()
@@ -1020,7 +1091,12 @@ private:
 		// edge.
 		fxLiveSlot_ = -1;
 		fxParShift_ = -1;
-		if (mode_ == Mode::Fx1 || mode_ == Mode::Fx2) FxUpdate();
+		if (mode_ == Mode::Fx) FxUpdate();
+
+		// Pattern is also read as state, for its tap-versus-hold. Not while
+		// the switch is down, where the buttons belong to the mode chooser.
+		if (mode_ == Mode::Pattern && !selectArmed_) PatternUpdate();
+		if (patStoreFlash_ > 0) patStoreFlash_--;
 
 		// (A recorded effect expires in LOOP ticks, counted down where the
 		// loop advances — see kFxPlaybackHold.)
@@ -1059,7 +1135,7 @@ private:
 		// starts following again once the knob is turned back through that
 		// value. See SoftPickup: snapping it to wherever the knob happened to
 		// end up would jump the filter at the exact moment you leave the mode.
-		const bool mainIsDepth = (mode_ == Mode::Fx1);
+		const bool mainIsDepth = (mode_ == Mode::Fx);
 		if (mainIsDepth) filterPickup_.Park(djFilterVal_, mainVal);
 		djFilterVal_ = filterPickup_.Update(mainIsDepth, mainVal);
 
@@ -1512,12 +1588,11 @@ private:
 	{
 		switch (mode_)
 		{
-		case Mode::Fx1:
+		case Mode::Fx:
 		{
 			// fxHeld_ is a mask of BUTTONS here, not slots — any single can be
 			// the shift, so there is no fixed slot order to walk. C stays lit
-			// as the steady mode marker even though it is no longer the only
-			// shift; it is what tells FX1 from FX2 at a glance.
+			// as the steady mode marker.
 			for (int8_t i = 0; i < 4; i++)
 			{
 				uint16_t b = (fxHeld_ & (1u << i)) ? kLedFull : 0;
@@ -1527,17 +1602,29 @@ private:
 			break;
 		}
 
-		case Mode::Fx2:
+		case Mode::Pattern:
 		{
-			// Still the single-shift form — see FxUpdate(). Slots walk in
-			// panel order, skipping the shift.
-			const int8_t shift = ModeShift();
-			int8_t slot = 0;
+			// Three states per slot, which is as much as a single-colour LED
+			// can carry and exactly what is needed here:
+			//
+			//   full   the pattern currently playing
+			//   half   a slot with something stored in it
+			//   dark   an empty slot
+			//
+			// The distinction that matters live is "which of these can I jump
+			// to", and half-versus-dark answers it at a glance. D also carries
+			// the mode reminder, at quarter, when it is neither live nor
+			// stored — dim enough not to read as a slot.
 			for (int8_t i = 0; i < 4; i++)
 			{
-				if (i == shift) { LedBrightness(i, ModeReminder()); continue; }
-				LedBrightness(i, (fxHeld_ & (1u << slot)) ? kLedFull : 0);
-				slot++;
+				uint16_t b;
+				if (patStoreFlash_ > 0 && i == patLastStored_)
+					b = ((patStoreFlash_ >> kBlinkFast) & 1) ? kLedFull : 0;
+				else if (i == patLive_)         b = kLedFull;
+				else if (loop_.PatternStored(i)) b = kLedHalf;
+				else if (i == kD)               b = ModeReminder();
+				else                            b = 0;
+				LedBrightness(i, b);
 			}
 			break;
 		}
@@ -1805,6 +1892,16 @@ private:
 	int32_t groupFlash_[kNumMuteGroups] = {};
 	/// Counts down while an UNDO is being acknowledged on the status LEDs.
 	int32_t undoFlash_ = 0;
+
+	// --- pattern slots ----------------------------------------------------
+	/// Which slot is playing. Starts at 0 so the first store has an obvious
+	/// home and the display is not blank before anything is saved.
+	int8_t  patLive_       = 0;
+	int8_t  patHeld_       = -1;   ///< button currently down, or -1
+	int32_t patHeldTicks_  = 0;    ///< how long it has been down
+	bool    patStored_     = false;///< this hold already fired its store
+	int8_t  patLastStored_ = -1;   ///< which pad to flash
+	int32_t patStoreFlash_ = 0;
 };
 
 // ===========================================================================

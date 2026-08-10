@@ -9,13 +9,14 @@ License: CC-BY-4.0
 repository: https://github.com/uglifruit/Nibble-KO
 Editor: web
 date-created: 2026-08-09
-date-updated: 2026-08-09
+date-updated: 2026-08-11
 
 contact:
   social:
     github: https://github.com/uglifruit
 
-# No UF2 yet - this card has no main.cpp and does not build. See CLAUDE.md.
+# No released UF2 yet - the card builds and plays, but calibration and
+# patterns are not yet persisted. See CLAUDE.md.
 uf2: []
 
 tags:
@@ -61,11 +62,17 @@ summary: |
   the effect and its own parameter curve, so a sweep can be drawn once and
   effects punched in and out over the top of it.<br><br>
 
-  IN DEVELOPMENT. Drums, the four-bar looper, mute groups, the effects and
-  sample playback all work on hardware. Calibration is not yet saved to
-  flash, so the card recalibrates at every power-up; the browser sample
-  manager is not written; and one mode slot is still unassigned. See the
-  repository's CLAUDE.md for what exists and what is still designed.
+  FOUR PATTERN SLOTS sit on the fourth mode. Tap to recall one instantly -
+  the playhead is not moved, so switching mid-bar reads as the band changing
+  part rather than a stop and start - and hold for a second to store the live
+  loop into a slot. Recalling discards whatever you were playing, which is
+  what makes it possible to try something over a pattern and abandon it.<br><br>
+
+  IN DEVELOPMENT. Drums, the four-bar looper, mute groups, the effects,
+  pattern slots and sample playback all work on hardware. Calibration and
+  patterns are held in RAM only, so both are lost at power-off, and the
+  browser app is not written. See the repository's CLAUDE.md for what exists
+  and what is still designed.
 
 panel:
   inputs:
@@ -87,9 +94,9 @@ panel:
       description: Not used in this version.
   outputs:
     - id: CVOut1
-      name: Bass
+      name: Unused
       type: cv
-      description: A four-note bassline played by the single buttons, which make no drum sound and so have a spare output - A is the root, B a tone below, C the fifth, D the octave.
+      description: Not used in this version. NIBBLE put a bassline here, played by the single buttons; this card drops it because the singles have a bigger job as mode selectors and shifts.
     - id: CVOut2
       name: Unused
       type: cv
@@ -121,7 +128,7 @@ controls:
       description: Play the current mode without recording.
     down:
       name: Mode select
-      description: "Hold DOWN and press a button to choose a mode; the choice lands when you RELEASE, and then LATCHES, so Down and Up never need to be held at once. A: drums. B: mute groups. C: twelve performance effects. D: unassigned. With a PAIR held it fires a one-shot instead - A+B undo, C+D play/stop, A+C the browser setup, A+D quantise (the last two are not implemented yet). Commit-on-release exists because Four Voltages holds its last voltage: the CV may already be sitting on the button you want, so a press-driven select would never fire."
+      description: "Hold DOWN and press a button to choose a mode; the choice lands when you RELEASE, and then LATCHES, so Down and Up never need to be held at once. A: drums. B: mute groups. C: twelve performance effects. D: four pattern slots, tap to recall and hold to store. With a PAIR held it fires a one-shot instead - A+B undo, C+D play/stop, A+C the browser setup, A+D quantise (the last two are not implemented yet). Commit-on-release exists because Four Voltages holds its last voltage: the CV may already be sitting on the button you want, so a press-driven select would never fire."
     tap:
       name: Capture (during calibration)
       description: While calibrating, tap to capture the combination you are holding. Outside calibration a tap is just a short mode-select gesture and does nothing on its own.

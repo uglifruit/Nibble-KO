@@ -16,24 +16,23 @@
 // extend (../WorkshopBio/samplestore.h has the resolve-by-priority logic:
 // user upload overrides baked default, per slot).
 //
-// TODO(design session): the PCM playback path is NOT implemented yet. This
-// header currently ports only the synth backend, unchanged in behaviour from
-// NIBBLE. Still to design, before writing it:
-//   - DrumVoice PCM state (position/fraction/increment — see BioMimicry's
-//     Voice::pcm/pcmLen/pcmIdx/pcmFrac/pcmInc in ../WorkshopBio/voices.h, and
-//     its comment on why position must split whole-samples from a Q16
-//     fraction rather than being one Q16 number for samples over ~1.3s)
-//   - a per-voice backend flag (kSynth / kSample) and how DrumKit::Step()
-//     dispatches on it
-//   - what the Y knob does to a sample voice — NIBBLE deliberately chose
-//     synthesis partly BECAUSE Y-as-resampling is a harder problem than
-//     Y-as-live-parameter (see docs/LESSONS.md §4, "Decisions worth
-//     reconsidering, not inheriting")
-//   - the WebUI protocol extension for per-voice source assignment, on top of
-//     BioMimicry's upload/erase/slot messages
-//   - flash layout for 12 user-replaceable slots (BioMimicry's
-//     samplestore.h/UserSampleHeader is per mode*variant; this card has no
-//     modes, just 12 flat voice slots)
+// BOTH BACKENDS NOW EXIST. Which one a voice uses is decided per slot by
+// kVoiceSample in samples_default.h: an index into the baked sample bank, or
+// -1 to stay synthesised. DrumKit::TriggerVoice resolves that at trigger time
+// and calls TriggerPcm or Trigger accordingly, so the choice is data rather
+// than a second code path through the kit.
+//
+// Y IS PLAYBACK RATE on a sampled voice. NIBBLE chose synthesis partly to
+// avoid that question (docs/LESSONS.md §4 flags "decide early what Y does",
+// because resampling couples pitch to duration where a synth voice keeps
+// them independent). The answer here is to accept the coupling: the same
+// knob makes the whole kit higher-and-shorter or lower-and-longer, which is
+// what tape does and what anyone who has pitched a sampler expects.
+//
+// TODO(webui): kVoiceSample is still a compile-time table. It becomes a
+// runtime one loaded from flash when the browser can assign bank entries to
+// slots — the shape is already right for that, being indices rather than
+// audio. See webui.h's MSG_SET_SOURCE.
 
 #pragma once
 #include <stdint.h>
@@ -142,15 +141,37 @@ class DrumVoice
 public:
 	void Trigger(const DrumSpec &spec, int32_t pitchScaleQ16, int32_t decayAdj);
 
+	/// Start a SAMPLED voice instead of a synthesised one.
+	///
+	/// `rateQ16` is the playback rate: 65536 is the recorded pitch, double is
+	/// an octave up. `level` is the same Q8 gain the synth voices carry, so
+	/// the two backends sit in one mix without a second balancing pass.
+	void TriggerPcm(const int8_t *data, uint32_t len,
+	                int32_t rateQ16, uint16_t level);
+
 	/// One audio-rate sample. Returns roughly -2047..2047; silent when idle.
 	int32_t Step(uint32_t &rng);
 
-	bool Active() const { return env_ > 0 || noiseEnv_ > 0; }
+	bool Active() const
+	{
+		return env_ > 0 || noiseEnv_ > 0 || (pcm_ && pcmIdx_ < pcmLen_);
+	}
 
 	/// How much this voice is still contributing, for the allocator to compare.
 	/// Scaled by level_ so a quiet voice is correctly seen as a cheap steal.
+	///
+	/// A sampled voice has no envelope to read, so it reports how much of the
+	/// recording is LEFT. That is the same question the allocator is really
+	/// asking — "how much would cutting this cost" — and it keeps one
+	/// comparable number across both backends.
 	int32_t Energy() const
 	{
+		if (pcm_)
+		{
+			if (pcmIdx_ >= pcmLen_) return 0;
+			const uint32_t left = pcmLen_ - pcmIdx_;
+			return static_cast<int32_t>(left >> 4) * static_cast<int32_t>(level_);
+		}
 		int32_t e = (env_ > noiseEnv_) ? env_ : noiseEnv_;
 		return (e >> 8) * static_cast<int32_t>(level_);
 	}
@@ -170,12 +191,20 @@ private:
 	uint8_t  metal_      = 0;
 	uint16_t level_      = kLevelFull;
 
-	// TODO(design session): PCM playback state goes here when VoiceSource::Sample
-	// is implemented — position split into whole-samples + Q16 fraction (not one
-	// Q16 number: BioMimicry's Voice::pcmIdx/pcmFrac comment in
-	// ../WorkshopBio/voices.h explains why a single Q16 position wraps before
-	// reaching the end of anything longer than ~1.37s), plus a sample pointer
-	// and length resolved from samplestore-equivalent flash lookup.
+	// --- PCM backend ------------------------------------------------------
+	//
+	// Position is split into WHOLE SAMPLES and a Q16 fraction rather than
+	// being one Q16 number, and that is not a stylistic choice: a single
+	// uint32 Q16 position tops out at 2^32/65536 = 65536 samples, i.e. 1.37
+	// seconds at 48kHz. BioMimicry hit exactly this — its longer recordings
+	// wrapped to zero before reaching their end, so `idx < len` was never
+	// false, the voice never freed itself, and the sound looped forever.
+	// Splitting them makes the reachable length 2^32 samples instead.
+	const int8_t *pcm_    = nullptr;   ///< null = this voice is synthesised
+	uint32_t      pcmLen_ = 0;
+	uint32_t      pcmIdx_ = 0;         ///< whole samples played
+	uint32_t      pcmFrac_ = 0;        ///< Q16 fraction within the current one
+	uint32_t      pcmInc_ = 65536;     ///< Q16 rate; 65536 = recorded pitch
 };
 
 /// How many voices can decay at once.

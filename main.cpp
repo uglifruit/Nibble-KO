@@ -1031,12 +1031,17 @@ private:
 			if (fxLiveSlot_ >= 0)
 				fxPacked[fxLiveSlot_] = PackFx(static_cast<uint8_t>(fxCurrent_));
 
+			// The parameter lane writes only when a SHIFT is held. Without one
+			// the knob is ambiguous — there are four parameter curves and
+			// nothing says which you meant — so turning it in FX1 with no
+			// button down deliberately does nothing at all. fxParShift_ is
+			// -1 then, and RecordKnobs ignores the value.
 			loop_.RecordKnobs(filterLane_.HandOwns() && !mainIsDepth,
 			                  KnobVal(Knob::Main),
 			                  toneLane_.HandOwns(), KnobVal(Knob::Y),
 			                  fxPacked,
 			                  fxParShift_, KnobVal(Knob::Main),
-			                  filterLane_.HandOwns());
+			                  filterLane_.HandOwns() && fxParShift_ >= 0);
 		}
 
 		if (!playing_) return;

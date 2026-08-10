@@ -4,55 +4,93 @@
 Usage:
     python tools/mksamples.py <sample_dir> <output.h>
 
-Expects 8-bit SIGNED mono raw at 48kHz, one file per VOICE SLOT (not per mode
-— NIBBLE-KO has no modes, just 12 flat slots matching the twelve DRUMS
-gestures in drums.cpp's kGestureVoice table):
+Expects 8-bit SIGNED mono raw at 48kHz, named smpNN.raw and numbered from
+zero:
 
-    voice00.raw .. voice11.raw
+    smp00.raw  smp01.raw  smp02.raw ...
 
-A slot with no file gets a silent stub, so a fresh clone still compiles and
-that voice simply plays nothing until either a .raw is added here or the
-WebUI is used to assign it a sample after flashing.
+A BANK, not a per-voice list. Sample NN is not "the sound of voice NN" — it
+is entry NN of a library, and which voice plays it is a separate mapping
+(kVoiceSample in samples_default.h, and eventually whatever the WebUI
+stores). That indirection is the whole point: the browser will let any bank
+entry be assigned to any of the twelve voice slots, so baking a
+sample-per-slot would have to be undone the moment that lands.
 
-Ported from WorkshopBio/tools/mksamples.py (see that file for the emit()
-dedup trick), with the mode x round-robin-variant grid collapsed to one flat
-array per slot — NIBBLE-KO does not round-robin, each slot is one sound.
+Two consequences worth knowing:
 
-TODO(design session): whether/how a slot round-robins between several
-uploaded samples is undecided — see drums.h's VoiceSource TODO. This script
-and samples_default.h assume ONE sample per slot until that is designed.
+  * The bank can be LARGER than twelve. Ship a library, map five of them.
+  * The same entry can be used by several voices at no extra flash cost,
+    because the mapping is indices rather than copies.
 
-Converting a wav with ffmpeg:
-    ffmpeg -i kick.wav -ac 1 -ar 48000 -f s8 samples/voice00.raw
+Ported from WorkshopBio/tools/mksamples.py.
 
-Flash budget: 2MB total. See samplestore.h (once written) for how much of
-that a user-upload region reserves.
+Converting a wav by hand:
+    ffmpeg -i kick.wav -ac 1 -ar 48000 -f s8 samples/smp00.raw
+
+...though tools/importwav.py does that, plus trimming, levelling and dither.
+
+Flash budget: 2MB total, of which the firmware currently uses ~5%. At 48kHz
+8-bit mono a second of audio is 48KB, so a bank of short one-shots is cheap —
+about 1.2MB is available before samplestore.h's user region starts.
 """
 import os
+import re
 import sys
 
-NUM_VOICES = 12          # must match kNumVoices in drums.h
+MAX_SAMPLES = 64          # must match kMaxSamples in samples_default.h
 
 
-def load_slot(sample_dir, i):
-    path = os.path.join(sample_dir, f"voice{i:02d}.raw")
-    if os.path.isfile(path):
-        with open(path, "rb") as f:
-            return f.read()
-    return None
+def load_bank(sample_dir):
+    """Return [(index, bytes)] for every smpNN.raw present, in index order."""
+    out = []
+    if not os.path.isdir(sample_dir):
+        return out
+    for name in sorted(os.listdir(sample_dir)):
+        m = re.fullmatch(r"smp(\d+)\.raw", name)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if idx >= MAX_SAMPLES:
+            print(f"  {name}: index {idx} past the {MAX_SAMPLES} limit, skipped")
+            continue
+        with open(os.path.join(sample_dir, name), "rb") as f:
+            out.append((idx, f.read()))
+    return out
 
 
-def emit_slot(i, data):
-    name = f"voice{i:02d}"
-    lines = [f"const uint32_t {name}_pcm_len = {len(data)};",
-             f"const signed char {name}_pcm[] = {{"]
-    for j in range(0, len(data), 16):
-        chunk = data[j:j + 16]
+def emit(entries):
+    """One flat array plus per-entry offsets and sizes.
+
+    Concatenated rather than one array each, because a hundred small arrays
+    is a hundred symbols for the linker and an awkward table to index. Offsets
+    into one blob are simpler and let an empty slot be a zero-length span
+    rather than a special case.
+    """
+    blob = bytearray()
+    offs = [0] * MAX_SAMPLES
+    sizes = [0] * MAX_SAMPLES
+    for idx, data in entries:
+        offs[idx] = len(blob)
+        sizes[idx] = len(data)
+        blob += data
+
+    lines = [f"const uint32_t kSampleBankLen = {len(blob)};",
+             f"const uint32_t kSampleOff[{MAX_SAMPLES}] = {{"
+             + ", ".join(str(o) for o in offs) + "};",
+             f"const uint32_t kSampleSize[{MAX_SAMPLES}] = {{"
+             + ", ".join(str(s) for s in sizes) + "};",
+             "const signed char kSampleBank[] = {"]
+    if not blob:
+        # A zero-length array is not valid C++; one silent byte keeps the
+        # symbol real without anything being able to play it (size 0 above).
+        lines.append("    0,")
+    for i in range(0, len(blob), 16):
+        chunk = blob[i:i + 16]
         # Raw bytes are unsigned; reinterpret as signed two's complement.
         lines.append("    " + "".join(
             f"{b - 256 if b > 127 else b}," for b in chunk))
     lines.append("};")
-    return lines
+    return lines, len(blob)
 
 
 def main():
@@ -61,25 +99,17 @@ def main():
         sys.exit(1)
     sample_dir, out_path = sys.argv[1], sys.argv[2]
 
+    entries = load_bank(sample_dir)
+    for idx, data in entries:
+        print(f"  smp{idx:02d}: {len(data):6d} bytes ({len(data)/48.0:5.0f} ms)")
+
+    lines, total = emit(entries)
     out = ["// Auto-generated by tools/mksamples.py. Do not edit by hand.",
-           "#pragma once", "#include <stdint.h>", ""]
-    total = 0
-    have = []
-    for i in range(NUM_VOICES):
-        data = load_slot(sample_dir, i)
-        if data is None:
-            out += [f"const uint32_t voice{i:02d}_pcm_len = 0;",
-                     f"const signed char voice{i:02d}_pcm[] = {{0}};", ""]
-            continue
-        have.append(i)
-        total += len(data)
-        print(f"  voice{i:02d}: {len(data)} bytes")
-        out += emit_slot(i, data)
-        out.append("")
+           "#pragma once", "#include <stdint.h>", ""] + lines
 
     with open(out_path, "w") as f:
         f.write("\n".join(out) + "\n")
-    print(f"wrote {out_path}: {total} bytes of PCM across {len(have)} slot(s) "
+    print(f"wrote {out_path}: {total} bytes across {len(entries)} sample(s) "
           f"({total / 48000.0:.2f}s at 48kHz)")
 
 

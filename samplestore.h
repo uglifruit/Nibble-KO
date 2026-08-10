@@ -80,17 +80,20 @@ static inline bool HaveUserSamples()
 	return h->magic == kUserMagic && h->version == kUserVersion;
 }
 
-/// Where a given voice slot's audio actually lives, whichever source wins.
-struct SampleRef
-{
-	const int8_t *data;
-	uint32_t      len;
-};
+// SampleRef lives in samples_default.h, since the baked bank is the source
+// that always exists; the user region is the override on top of it.
 
-/// Resolve one slot. A user upload for that exact slot wins; otherwise the
-/// baked recording is used.
+/// Resolve one VOICE SLOT to the audio it should play, or {nullptr, 0} for
+/// "this voice is synthesised".
 ///
-/// TODO(design session): not called from anywhere yet — see file header.
+/// Two sources, in priority order:
+///   1. a user upload for that slot, if one has been sent over USB;
+///   2. the baked bank entry kVoiceSample maps the slot to.
+///
+/// Note the asymmetry: the user region is indexed by VOICE, because an upload
+/// is "replace what this pad plays", while the baked side is indexed through
+/// the bank, because a shipped library is shared. Both end up as a pointer
+/// and a length, which is all the voice needs.
 static inline SampleRef ResolveSample(int voice)
 {
 	if (voice < 0 || voice >= kNumVoices) return { nullptr, 0 };
@@ -103,10 +106,7 @@ static inline SampleRef ResolveSample(int voice)
 			return { UserData() + h->offset[voice], sz };
 	}
 
-	if (kHaveSamples)
-		return { kVoiceSample[voice], kVoiceSampleLen[voice] };
-
-	return { nullptr, 0 };
+	return BakedSample(kVoiceSample[voice]);
 }
 
 /// True if a slot has a user upload overriding its baked default.
@@ -122,7 +122,7 @@ static inline bool VoiceHasSample(int voice)
 {
 	if (voice < 0 || voice >= kNumVoices) return false;
 	if (VoiceIsUserLoaded(voice)) return true;
-	return kHaveSamples && kVoiceSampleLen[voice] > 0;
+	return BakedSample(kVoiceSample[voice]).len > 0;
 }
 
 } // namespace nko

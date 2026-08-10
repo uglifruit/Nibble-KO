@@ -1,8 +1,12 @@
-// drums.cpp — the kit and the DJ filter. Synth backend, ported unchanged in
-// behaviour from NIBBLE's DRUMS half. See drums.h for what's still TODO
-// (the sample backend).
+// drums.cpp — the kit and the DJ filter.
+//
+// Two backends. The synth one is ported unchanged in behaviour from NIBBLE's
+// DRUMS half; the sampled one plays a baked bank entry or a user upload.
+// Which a voice uses is decided per slot by kVoiceSample, resolved through
+// ResolveSample() at trigger time — see samples_default.h.
 
 #include "drums.h"
+#include "samplestore.h"   // ResolveSample; includes samples_default.h
 #include "fastmath.h"
 #include <stdint.h>
 #include "pico.h"
@@ -125,6 +129,12 @@ void DrumVoice::Trigger(const DrumSpec &spec, int32_t pitchScaleQ16, int32_t dec
 	if (p0 > kMaxInc) p0 = kMaxInc;
 	if (pf > kMaxInc) pf = kMaxInc;
 
+	// Clear the PCM side. Slots are reused between backends, so a synth
+	// trigger landing on a slot that last played a sample would otherwise
+	// keep the recording and ignore everything set below.
+	pcm_    = nullptr;
+	pcmLen_ = 0;
+
 	phase_      = 0;
 	phase2_     = 0;
 	pitch_      = static_cast<uint32_t>(p0);
@@ -150,8 +160,57 @@ void DrumVoice::Trigger(const DrumSpec &spec, int32_t pitchScaleQ16, int32_t dec
 	noiseEnv_ = (spec.noiseMix > 0) ? (4095 << kDrumEnvFrac) : 0;
 }
 
+void DrumVoice::TriggerPcm(const int8_t *data, uint32_t len,
+                           int32_t rateQ16, uint16_t level)
+{
+	pcm_     = data;
+	pcmLen_  = len;
+	pcmIdx_  = 0;
+	pcmFrac_ = 0;
+
+	// Clamped either side. Below about an octave down a short one-shot turns
+	// into a slow lump several seconds long, and above four octaves up it is
+	// a click — both are past the point where the control is musical, and the
+	// bottom end also matters because the voice is not freed until it ends.
+	constexpr int32_t kMinRate = 65536 / 2;
+	constexpr int32_t kMaxRate = 65536 * 4;
+	if (rateQ16 < kMinRate) rateQ16 = kMinRate;
+	if (rateQ16 > kMaxRate) rateQ16 = kMaxRate;
+	pcmInc_ = static_cast<uint32_t>(rateQ16);
+
+	level_  = level ? level : kLevelFull;
+
+	// The synth side must be silent, or Active() and Step() would see a live
+	// envelope and mix a tone under the recording.
+	env_      = 0;
+	noiseEnv_ = 0;
+}
+
 int32_t __not_in_flash_func(DrumVoice::Step)(uint32_t &rng)
 {
+	// --- sampled voices ---------------------------------------------------
+	if (pcm_)
+	{
+		if (pcmIdx_ >= pcmLen_) { pcm_ = nullptr; return 0; }
+
+		// Linear interpolation between neighbouring samples. Without it a
+		// rate other than 1.0 steps between whole samples and the aliasing is
+		// audible as a gritty edge on every pitched hit — which matters here
+		// because the Y knob pitches the whole kit.
+		const int32_t a = pcm_[pcmIdx_];
+		const int32_t b = (pcmIdx_ + 1 < pcmLen_) ? pcm_[pcmIdx_ + 1] : 0;
+		const int32_t mu = static_cast<int32_t>(pcmFrac_);
+		const int32_t s  = a + (((b - a) * mu) >> 16);
+
+		pcmFrac_ += pcmInc_;
+		pcmIdx_  += pcmFrac_ >> 16;
+		pcmFrac_ &= 0xFFFF;
+
+		// 8-bit source (-128..127) up to the card's 12-bit range, then the
+		// per-voice level, exactly as the synth path applies it.
+		return ((s << 4) * static_cast<int32_t>(level_)) >> 8;
+	}
+
 	if (env_ <= 0 && noiseEnv_ <= 0) return 0;
 
 	// --- body: a triangle folded out of an 18-bit phase accumulator ---
@@ -238,13 +297,27 @@ void DrumKit::TriggerVoice(int8_t voice, int32_t yKnob)
 
 	// Y sweeps the whole kit's character in one gesture: pitch from half to
 	// double, and decay from three shifts longer to three shorter.
-	//
-	// TODO(design session): only meaningful for Synth voices. See drums.h.
 	int32_t y = knob_to_q16(yKnob);
 	int32_t pitchScale = 32768 + y;                  // Q16 0.5 .. 1.5
 	int32_t decayAdj   = 3 - ((yKnob * 6) >> 12);    // +3 .. -3
 
-	voice_[PickSlot()].Trigger(kVoices[voice], pitchScale, decayAdj);
+	// A SAMPLED slot plays its recording; everything else is synthesised.
+	//
+	// Y becomes PLAYBACK RATE on a sample, which is the honest equivalent of
+	// what it does to a synth voice: the same knob makes the whole kit higher
+	// and shorter or lower and longer, because resampling couples pitch and
+	// duration exactly the way tape does. NIBBLE's LESSONS.md flagged
+	// "decide early what Y does" precisely because pitch and decay stop being
+	// independent once samples are involved — this accepts that rather than
+	// fighting it, and it is the behaviour anyone who has pitched a sampler
+	// already expects.
+	const SampleRef s = ResolveSample(voice);
+	DrumVoice &slot = voice_[PickSlot()];
+
+	if (s.data && s.len)
+		slot.TriggerPcm(s.data, s.len, pitchScale, kVoices[voice].level);
+	else
+		slot.Trigger(kVoices[voice], pitchScale, decayAdj);
 }
 
 /// Choose a voice slot: a free one if there is one, otherwise the QUIETEST.

@@ -54,10 +54,14 @@ add_executable(${CARD_NAME}
 if (TARGET pcm_samples)
   add_dependencies(${CARD_NAME} pcm_samples)
 endif()
-# samples.h is included via samples_default.h from drums.cpp once the PCM
-# backend exists (see drums.h) — name it as a source dependency then, so
-# editing a sample actually relinks. WorkshopBio/CMakeLists.txt has the
-# set_source_files_properties(... OBJECT_DEPENDS samples.h) pattern.
+# drums.cpp reaches samples.h through samplestore.h -> samples_default.h.
+# CMake cannot see that through a generated header, so name it explicitly:
+# without this, re-importing a sample regenerates samples.h and nothing
+# rebuilds, and you flash firmware that still contains the old audio.
+if (TARGET pcm_samples)
+  set_source_files_properties(drums.cpp PROPERTIES
+    OBJECT_DEPENDS ${CMAKE_CURRENT_LIST_DIR}/samples.h)
+endif()
 
 target_compile_options(${CARD_NAME} PRIVATE
   -Wdouble-promotion -Wfloat-conversion -Wall -Wextra)

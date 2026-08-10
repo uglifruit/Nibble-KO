@@ -1150,19 +1150,22 @@ private:
 		case Mode::Drums:
 		default:
 		{
-			// Show the SOUNDING combo, not the tracker's raw current level.
-			// While a ghost is armed those differ: the CV has fallen back to
-			// one of the released pair's members, so Current() reports that
-			// single — but the pair is still what you can hear, and showing
-			// the single made the display contradict the sound on every
-			// release.
-			uint8_t mask = ComboLedMask(levels_.Sounding());
+			// ONLY the hit flashes. Nothing is shown for a merely-held combo.
+			//
+			// NIBBLE lit the sounding combo dim, which made sense there — a
+			// held single is a bank-select you are mid-way through using, so
+			// showing it was showing your hand position. Here it reads as a
+			// fault: Four Voltages holds the last-released single forever, so
+			// after a calibration (or any release) a pad sits lit with nobody
+			// touching anything. Reported from the bench as a hanging LED on
+			// first entering DRUMS, which is exactly the CV resting where the
+			// last learn step left it.
+			//
+			// The flash on each hit is the information that matters anyway —
+			// it says what you PLAYED, where the dim glow only said what the
+			// voltage happens to be.
 			for (int i = 0; i < 4; i++)
-			{
-				uint16_t b = (mask & (1u << i)) ? kLedDim : 0;
-				if (ledFlash_[i] > 0) b = kLedFull;
-				LedBrightness(i, b);
-			}
+				LedBrightness(i, ledFlash_[i] > 0 ? kLedFull : 0);
 			break;
 		}
 		}

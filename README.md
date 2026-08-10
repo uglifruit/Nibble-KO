@@ -7,7 +7,7 @@ module — with a browser sample manager.**
 *Four buttons. Ten voltages. Twelve drums, yours to fill.*
 
 > **Status: in development, playable on hardware.** Drums, the looper, mute
-> groups, twelve performance effects, four pattern slots and sample playback
+> groups, twelve performance effects, three pattern slots and sample playback
 > all work. Calibration and patterns are not yet saved to flash, so both are
 > lost at power-off, and the browser app is not written. See
 > [CLAUDE.md](CLAUDE.md) for exactly what's here and what isn't.
@@ -54,7 +54,7 @@ what lets every mode be recorded through one mechanism.
 | **A** | **Drums** — the kit (where you start) |
 | **B** | **Mute** — three mute groups |
 | **C** | **FX** — twelve performance effects |
-| **D** | **Pattern** — four stored loops |
+| **D** | **Pattern** — three stored loops |
 
 And with a **pair** held, one-shot actions:
 
@@ -90,18 +90,29 @@ bringing it back.
 
 ### Pattern
 
-Four slots. **Tap** a button to recall that pattern — instantly, keeping the
-playhead where it is, so switching mid-bar reads as the band changing part
-rather than a stop and start. **Hold** a button for a second to store the
-live loop into it.
+Three slots, and the **switch is the verb**:
+
+| | |
+|---|---|
+| **Middle** + hold D, tap A/B/C | **recall** that slot, instantly |
+| **Up** + hold D, tap A/B/C | **store** the live loop into it |
+
+That reuses what Up already means everywhere else — *commit this to the
+loop* — so there is no new gesture to learn.
+
+Recall keeps the playhead where it is, so switching mid-bar reads as the band
+changing part rather than a stop and start. It **discards** whatever you were
+playing, which is what lets you try something over a pattern and abandon it.
+(Undo still gets you back one step.)
 
 The pads show three states: **full** is the pattern playing, **half** is a
 slot with something in it, **dark** is empty — so what you can jump to is
 readable at a glance.
 
-Recalling **discards** whatever you were playing. That is deliberate, and it
-is why storing is a separate hold: it means you can try something over a
-pattern and abandon it. (Undo still gets you back one step.)
+> A hold-to-store gesture would not work on this hardware. Four Voltages
+> *latches*: a held button is a level that sits there indefinitely, so any
+> "held for a second" test passes eventually and every recall would become a
+> store.
 
 ### FX — twelve effects, four banks
 
@@ -241,6 +252,11 @@ map couldn't silently change an old loop.
   them in and out over the web app is the next natural step.
 - **Mute groups are hardcoded** three ways by voice index, pending the WebUI
   that would assign them.
+
+## Credits
+
+The baked drum samples are Cheetah SpecDrum ROMs (1986), from
+<https://samples.kb6.de/>. See [samples/README.md](samples/README.md).
 
 ## Repo
 

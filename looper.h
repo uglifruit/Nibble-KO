@@ -164,10 +164,15 @@ constexpr int kQuantTicks = kTicksPerBeat / 4;                 // 12
 
 constexpr int kMaxEvents = 512;
 
-/// How many patterns can be stored. Four, one per button — the gesture is
-/// hold-a-shift-and-tap like everything else, so the count follows the panel
-/// rather than being a number someone picked.
-constexpr int kNumPatterns = 4;
+/// How many patterns can be stored.
+///
+/// THREE, not four, and for the same reason there are three mute groups: the
+/// gesture is hold-D-and-tap, so the shift button is not itself a slot. The
+/// count follows the panel rather than being a number someone picked.
+///
+/// Indexed 0..2 by SlotForShiftedTap, which ranks the tap among the
+/// non-shift singles in panel order — so slots 0/1/2 are pads A/B/C.
+constexpr int kNumPatterns = 3;
 
 /// Filter automation may never occupy more than this many slots.
 ///

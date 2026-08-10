@@ -48,7 +48,11 @@ not a wholesale swap, which is the point of the card.
 
 ## Source
 
-Cheetah SpecDrum sample ROMs (1986), a widely circulated set from the ZX
-Spectrum drum machine of the same name. The `afro_`, `electro_`, `latin_` and
-`orig_` groups are its four factory kits; only some of `orig_` is baked in
-today, and the rest are here to be swapped in by editing `kVoiceSample`.
+Cheetah SpecDrum sample ROMs (1986), from the ZX Spectrum drum machine of the
+same name. Downloaded from **<https://samples.kb6.de/>**, which archives the
+original ROM sets.
+
+The `afro_`, `electro_`, `latin_` and `orig_` groups are its four factory
+kits. Only five of `orig_` are baked in today; the other 27 files are here to
+be swapped in by editing `kVoiceSample` — no re-import needed, since the bank
+is indices rather than audio.

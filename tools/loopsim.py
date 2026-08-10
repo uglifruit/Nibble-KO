@@ -35,6 +35,7 @@ LANE_PAR_A, LANE_PAR_B, LANE_PAR_C, LANE_PAR_D = 6, 7, 8, 9
 LANE_FX_FIRST = LANE_FX_A
 LANE_PAR_FIRST = LANE_PAR_A
 NUM_FX_SLOTS = 4
+NUM_PATTERNS = 3   # hold D and tap A/B/C; the shift is not a slot
 
 # Shift C's lane is the TIMING one and never joins the audio chain.
 LANE_TIMING = LANE_FX_C
@@ -852,6 +853,18 @@ def test_pattern_recall_keeps_the_playhead():
     check("pattern: only events ahead of the playhead fire", fired, [2])
 
 
+def test_pattern_slots_are_three_not_four():
+    """THREE slots, because the gesture is hold-D-and-tap: the shift button is
+    not itself a slot, same as the three mute groups.
+
+    This also pins down why there is no hold-to-store gesture. Four Voltages
+    LATCHES -- a held button is a level that sits there indefinitely -- so any
+    'held for N ticks' test passes eventually and every recall would become a
+    store. The switch says which verb instead.
+    """
+    check("pattern: three slots, one per non-shift pad", NUM_PATTERNS, 3)
+
+
 def test_pattern_recall_of_empty_slot_is_a_noop():
     """Tapping an empty slot must leave the loop alone. Silently wiping what
     you are playing is not something a tap should ever do."""
@@ -1048,6 +1061,7 @@ def main():
     test_undo_does_not_replay_the_bar_so_far()
     test_patterns_store_voices_not_sounds()
     test_pattern_recall_keeps_the_playhead()
+    test_pattern_slots_are_three_not_four()
     test_pattern_recall_of_empty_slot_is_a_noop()
     test_pattern_store_is_a_snapshot()
     test_undo_restores_every_lane()

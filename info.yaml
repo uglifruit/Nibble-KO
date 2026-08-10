@@ -62,11 +62,14 @@ summary: |
   the effect and its own parameter curve, so a sweep can be drawn once and
   effects punched in and out over the top of it.<br><br>
 
-  FOUR PATTERN SLOTS sit on the fourth mode. Tap to recall one instantly -
-  the playhead is not moved, so switching mid-bar reads as the band changing
-  part rather than a stop and start - and hold for a second to store the live
-  loop into a slot. Recalling discards whatever you were playing, which is
-  what makes it possible to try something over a pattern and abandon it.<br><br>
+  THREE PATTERN SLOTS sit on the fourth mode, where the SWITCH is the verb:
+  hold D and tap A, B or C to recall a slot instantly, or do the same with
+  the switch UP to store the live loop into it instead. That reuses what Up
+  already means everywhere else - commit this to the loop - so there is no
+  new gesture to learn. Recall does not move the playhead, so switching
+  mid-bar reads as the band changing part rather than a stop and start, and
+  it discards whatever you were playing, which is what makes it possible to
+  try something over a pattern and abandon it.<br><br>
 
   IN DEVELOPMENT. Drums, the four-bar looper, mute groups, the effects,
   pattern slots and sample playback all work on hardware. Calibration and
@@ -128,7 +131,7 @@ controls:
       description: Play the current mode without recording.
     down:
       name: Mode select
-      description: "Hold DOWN and press a button to choose a mode; the choice lands when you RELEASE, and then LATCHES, so Down and Up never need to be held at once. A: drums. B: mute groups. C: twelve performance effects. D: four pattern slots, tap to recall and hold to store. With a PAIR held it fires a one-shot instead - A+B undo, C+D play/stop, A+C the browser setup, A+D quantise (the last two are not implemented yet). Commit-on-release exists because Four Voltages holds its last voltage: the CV may already be sitting on the button you want, so a press-driven select would never fire."
+      description: "Hold DOWN and press a button to choose a mode; the choice lands when you RELEASE, and then LATCHES, so Down and Up never need to be held at once. A: drums. B: mute groups. C: twelve performance effects. D: three pattern slots, hold D and tap A/B/C to recall - or do the same with the switch UP to store. With a PAIR held it fires a one-shot instead - A+B undo, C+D play/stop, A+C the browser setup, A+D quantise (the last two are not implemented yet). Commit-on-release exists because Four Voltages holds its last voltage: the CV may already be sitting on the button you want, so a press-driven select would never fire."
     tap:
       name: Capture (during calibration)
       description: While calibrating, tap to capture the combination you are holding. Outside calibration a tap is just a short mode-select gesture and does nothing on its own.

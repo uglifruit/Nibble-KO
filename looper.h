@@ -36,21 +36,48 @@ constexpr uint8_t kKnobEvent = 0x80;
 
 /// The automation lanes.
 ///
-/// The first two are knobs. The third is the performance EFFECT, which is
-/// recorded as a PARAMETER rather than as knob movement — "crush at depth
-/// 900", not "the Main knob is at 900". That distinction matters because in
-/// FX1 the Main knob IS the depth, so recording it as a knob would write the
-/// same movement into the filter lane and replay a filter sweep that never
-/// happened. Recording what the effect WAS sidesteps that entirely.
+/// The first two are knobs. The rest are performance EFFECTS, recorded as
+/// PARAMETERS rather than as knob movement — "crush at depth 900", not "the
+/// Main knob is at 900". That distinction matters because in FX1 the Main
+/// knob IS the depth, so recording it as a knob would write the same movement
+/// into the filter lane and replay a filter sweep that never happened.
 ///
-/// kNumLanes must stay a POWER OF TWO: LaneOf() masks with kNumLanes-1, so
-/// three lanes need four slots. The fourth is spare.
+/// FOUR FX lanes, one per SHIFT BUTTON. With a single lane a second recorded
+/// effect overwrote the first wherever the two overlapped in the bar — you
+/// could not have a crush on beat 1 and a gate on beat 3 without the later
+/// pass eating the earlier one. One lane per shift means each family of
+/// effects keeps its own timeline and they layer instead of competing.
+///
+/// The lane is chosen by the SHIFT, not by the effect, so which lane a
+/// gesture writes to is fixed by how it is played — hold A and you are
+/// always writing lane A, whichever of A's three effects you tap.
+///
+/// kNumLanes must stay a POWER OF TWO: LaneOf() masks with kNumLanes-1. Six
+/// lanes therefore need eight slots; the last two are spare.
 enum KnobLane : uint8_t {
 	kLaneFilter = 0,   ///< Main knob -> DJ filter
 	kLaneTone   = 1,   ///< Y knob -> kit character
-	kLaneFx     = 2,   ///< which effect is active, and how deep
-	kNumLanes   = 4    ///< a power of two, for LaneOf()'s mask
+	kLaneFxA    = 2,   ///< effects held under shift A (filters)
+	kLaneFxB    = 3,   ///< shift B (destruction)
+	kLaneFxC    = 4,   ///< shift C (TIME — see below)
+	kLaneFxD    = 5,   ///< shift D (dynamics)
+	kNumLanes   = 8    ///< a power of two, for LaneOf()'s mask
 };
+
+/// The first FX lane, so a shift index maps to a lane by addition.
+constexpr uint8_t kLaneFxFirst = kLaneFxA;
+
+/// Which lane a shift button writes to.
+static inline uint8_t FxLaneForShift(int8_t shift)
+{
+	return static_cast<uint8_t>(kLaneFxFirst + shift);
+}
+
+/// Shift C carries the TIME family (stutter, half/double time, flam), and
+/// those cannot meaningfully stack — half-time and double-time at once is a
+/// contradiction, not a texture. Its lane is therefore EXCLUSIVE: only one
+/// timing effect sounds at a time, while the other three lanes chain freely.
+constexpr uint8_t kLaneTiming = kLaneFxC;
 
 /// How an FX lane event packs into LoopEvent::value.
 ///
@@ -112,9 +139,16 @@ constexpr int kMaxEvents = 512;
 ///
 /// Automation also REPLACES rather than accumulates (see RecordKnob), so this
 /// ceiling is generous: one pass of dense knob movement fits inside it with
-/// room to spare, and hits always keep at least kMaxEvents - kMaxFilterEvents
+/// room to spare, and hits always keep at least kMaxEvents - kMaxKnobEvents
 /// slots to themselves.
-constexpr int kMaxKnobEvents = 192;
+///
+/// Raised from 192 when the FX lanes went from one to four. Six lanes can
+/// legitimately hold more than two ever could: a lane held for a whole
+/// four-bar loop is 96 events on its own, so 192 was under two full lanes.
+/// 320 leaves 192 slots for hits, which is far more than a pair of hands
+/// plus a few overdubs will ever place, while still refusing to let
+/// automation eat the array — which is the bug this constant exists for.
+constexpr int kMaxKnobEvents = 320;
 
 /// Tempo range. 40-240 BPM across the X knob.
 constexpr int32_t kBpmMin = 40;
@@ -213,16 +247,20 @@ public:
 	/// because a shared countdown consumed by whichever lane asked first would
 	/// starve the others completely.
 	///
-	/// The FX lane differs from the two knob lanes in one way that matters:
-	/// it writes whenever an effect is ACTIVE, not only when something is
+	/// The FX lanes differ from the two knob lanes in one way that matters:
+	/// they write whenever an effect is ACTIVE, not only when something is
 	/// "moving". An effect being held steady is information — it has to be
 	/// recorded for every tick it is held, or playback would turn it on and
-	/// then never off. `fxPacked` of 0 means no effect, which records nothing
-	/// and so leaves any earlier pass's effect alone, exactly as a still knob
+	/// then never off. A packed value of 0 means no effect, which records
+	/// nothing and so leaves any earlier pass alone, exactly as a still knob
 	/// does.
+	///
+	/// `fxPacked` is indexed by SHIFT (0..3 for A..D), so only the lane whose
+	/// shift is currently held is written. The others keep whatever earlier
+	/// passes put there — which is the whole point of having four.
 	void RecordKnobs(bool filterMoving, int32_t filterKnob,
 	                 bool toneMoving,   int32_t toneKnob,
-	                 uint8_t fxPacked);
+	                 const uint8_t *fxPacked);
 
 	/// Called when record is armed or released. Drops the knob reference so the
 	/// next RecordKnob() re-seeds instead of comparing against a stale value

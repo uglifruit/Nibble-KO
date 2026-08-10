@@ -203,7 +203,7 @@ void Looper::RecordHit(int8_t voice, uint8_t velocity)
 
 void Looper::RecordKnobs(bool filterMoving, int32_t filterKnob,
                          bool toneMoving,   int32_t toneKnob,
-                         uint8_t fxPacked)
+                         const uint8_t *fxPacked)
 {
 	// One countdown for ALL lanes, checked once and reset once. Letting each
 	// lane test and consume it separately would mean whichever asked first ate
@@ -217,12 +217,19 @@ void Looper::RecordKnobs(bool filterMoving, int32_t filterKnob,
 	if (filterMoving) RecordLane(kLaneFilter, filterKnob);
 	if (toneMoving)   RecordLane(kLaneTone,   toneKnob);
 
-	// The FX lane writes whenever an effect is HELD, not only when something
+	// The FX lanes write whenever an effect is HELD, not only when something
 	// moved — holding one steady is exactly what has to be captured, or
 	// playback would start the effect and never stop it. RecordLane takes a
 	// 0..4095 knob value and stores value>>4, so the packed byte is scaled up
 	// here to survive that round trip intact.
-	if (fxPacked != 0) RecordLane(kLaneFx, static_cast<int32_t>(fxPacked) << 4);
+	//
+	// Only the lane whose shift is held writes. The rest are left untouched,
+	// so an effect recorded under a different shift on an earlier pass
+	// survives — which is why there are four lanes rather than one.
+	if (!fxPacked) return;
+	for (int8_t s = 0; s < kNumSingles; s++)
+		if (fxPacked[s] != 0)
+			RecordLane(FxLaneForShift(s), static_cast<int32_t>(fxPacked[s]) << 4);
 }
 
 /// Is `tick` within the replace window of the playhead, the short way round?

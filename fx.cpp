@@ -15,33 +15,47 @@ const Fx kFxForGesture[kNumSingles][kNumSingles] = {
 	/* D */ { Fx::Gate,       Fx::Flam,        Fx::Silence,     Fx::None       },
 };
 
-void FxRack::Set(Fx f, int32_t depth)
+void FxRack::SetSlot(int slot, Fx f, int32_t depth)
 {
+	if (slot < 0 || slot >= kNumFxSlots) return;
+	FxSlot &s = slot_[slot];
+
 	// Clearing the state on a CHANGE, not every call. Filters carry charge and
 	// the decimator holds a sample; leaving those alive across a switch makes
 	// the new effect open with a click of the old one's residue.
-	if (f != active_)
-	{
-		v1_ = v2_ = 0;
-		holdVal_ = holdCnt_ = 0;
-		active_ = f;
-	}
-	depth_ = depth;
+	if (f != s.fx) { s.Clear(); s.fx = f; }
+	s.depth = depth;
+
+	if (f == Fx::None) active_ &= static_cast<uint8_t>(~(1u << slot));
+	else               active_ |= static_cast<uint8_t>(1u << slot);
 
 	// The filter coefficient, for the three effects that use one. A perceptual
 	// taper — a linear sweep spends most of its travel where the ear hears
 	// almost no change. Cubic-weighted, same shape as the DJ filter's.
-	int32_t r = (depth_ << 15) >> 12;              // 0..32767
+	int32_t r = (depth << 15) >> 12;               // 0..32767
 	int32_t q = (r * r) >> 15;
 	int32_t c = (q * r) >> 15;
-	g_ = 400 + ((r * 3000 + q * 8000 + c * 15000) >> 15);
-	if (g_ < 200)   g_ = 200;
-	if (g_ > 20000) g_ = 20000;
+	s.g = 400 + ((r * 3000 + q * 8000 + c * 15000) >> 15);
+	if (s.g < 200)   s.g = 200;
+	if (s.g > 20000) s.g = 20000;
+}
+
+void FxRack::Clear()
+{
+	for (int i = 0; i < kNumFxSlots; i++)
+	{
+		slot_[i].Clear();
+		slot_[i].fx = Fx::None;
+	}
+	active_ = 0;
 }
 
 FxTiming FxRack::Timing() const
 {
-	switch (active_)
+	// Only the timing slot is consulted, so half-time and double-time can
+	// never both be asking at once — the exclusivity is structural rather
+	// than something that has to be resolved here.
+	switch (slot_[kFxTimingSlot].fx)
 	{
 	case Fx::HalfTime:   return FxTiming::Half;
 	case Fx::DoubleTime: return FxTiming::Double;
@@ -53,7 +67,24 @@ FxTiming FxRack::Timing() const
 
 int32_t __not_in_flash_func(FxRack::Step)(int32_t in)
 {
-	switch (active_)
+	if (active_ == 0) return in;
+
+	// Series, in shift order, so the chain is deterministic rather than
+	// depending on which effect was recorded first. The timing slot is
+	// skipped: its effects act on the looper, not on the signal.
+	int32_t v = in;
+	for (int i = 0; i < kNumFxSlots; i++)
+	{
+		if (i == kFxTimingSlot) continue;
+		if (active_ & (1u << i)) v = slot_[i].Step(v);
+	}
+	return v;
+}
+
+int32_t __not_in_flash_func(FxSlot::Step)(int32_t in)
+{
+	const int32_t depth_ = depth;
+	switch (fx)
 	{
 	case Fx::None:
 	default:
@@ -69,23 +100,23 @@ int32_t __not_in_flash_func(FxRack::Step)(int32_t in)
 	case Fx::BandSweep:
 	{
 		constexpr int32_t kRes = 14000;            // Q15, a mild emphasis
-		int32_t hp = in - ((kRes * v1_) >> 15) - v2_;
-		v1_ += (g_ * hp) >> 15;
-		int32_t lp = v2_ + ((g_ * v1_) >> 15);
-		v2_ = lp;
+		int32_t hp = in - ((kRes * v1) >> 15) - v2;
+		v1 += (g * hp) >> 15;
+		int32_t lp = v2 + ((g * v1) >> 15);
+		v2 = lp;
 
 		// Clamp the states. An integer SVF at high g with resonance wraps
 		// rather than merely getting loud, and a wrap is a full-scale square
 		// wave, not a filter sound.
 		constexpr int32_t kMax = 1 << 20;
-		if (v1_ >  kMax) v1_ =  kMax;
-		if (v1_ < -kMax) v1_ = -kMax;
-		if (v2_ >  kMax) v2_ =  kMax;
-		if (v2_ < -kMax) v2_ = -kMax;
+		if (v1 >  kMax) v1 =  kMax;
+		if (v1 < -kMax) v1 = -kMax;
+		if (v2 >  kMax) v2 =  kMax;
+		if (v2 < -kMax) v2 = -kMax;
 
-		if (active_ == Fx::LowPass)  return lp;
-		if (active_ == Fx::HighPass) return hp;
-		return v1_ >> 2;                           // band-pass, tamed
+		if (fx == Fx::LowPass)  return lp;
+		if (fx == Fx::HighPass) return hp;
+		return v1 >> 2;                           // band-pass, tamed
 	}
 
 	// --- B: destruction --------------------------------------------------
@@ -104,8 +135,8 @@ int32_t __not_in_flash_func(FxRack::Step)(int32_t in)
 		// effective rate by N, which aliases everything above the new Nyquist
 		// back down — the characteristic grainy pitch-shimmer.
 		int32_t hold = 1 + ((depth_ * 32) >> 12);
-		if (--holdCnt_ <= 0) { holdCnt_ = hold; holdVal_ = in; }
-		return holdVal_;
+		if (--holdCnt <= 0) { holdCnt = hold; holdVal = in; }
+		return holdVal;
 	}
 
 	case Fx::Fold:
@@ -138,15 +169,15 @@ int32_t __not_in_flash_func(FxRack::Step)(int32_t in)
 		// which keeps it independent of tempo — a gate that slowed with the
 		// pattern would just sound like tremolo.
 		uint32_t rate = 64 + static_cast<uint32_t>((4095 - depth_) * 12);
-		gatePhase_ += 1;
-		if (gatePhase_ >= rate) gatePhase_ = 0;
+		gatePhase += 1;
+		if (gatePhase >= rate) gatePhase = 0;
 		// A short ramp at each edge, or the chop clicks on every transition.
 		constexpr uint32_t kEdge = 32;
 		uint32_t half = rate >> 1;
-		if (gatePhase_ >= half) return 0;
+		if (gatePhase >= half) return 0;
 		int32_t gain = 256;
-		if (gatePhase_ < kEdge)          gain = static_cast<int32_t>(gatePhase_ * 8);
-		else if (half - gatePhase_ < kEdge) gain = static_cast<int32_t>((half - gatePhase_) * 8);
+		if (gatePhase < kEdge)          gain = static_cast<int32_t>(gatePhase * 8);
+		else if (half - gatePhase < kEdge) gain = static_cast<int32_t>((half - gatePhase) * 8);
 		if (gain > 256) gain = 256;
 		return (in * gain) >> 8;
 	}

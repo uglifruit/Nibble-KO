@@ -847,7 +847,7 @@ private:
 		fxCurrent_ = Fx::None;
 
 		// Not while the switch is down — those presses are choosing a mode.
-		// fxLive_ is already false, so the caller falls through to playback.
+		// fxLiveSlot_ is already -1, so the caller falls through to playback.
 		if (selectArmed_) return;
 
 		if (mode_ == Mode::Fx1)
@@ -880,7 +880,10 @@ private:
 			//
 			// Depth belongs to the FX lane, and the FX lane alone.
 			fxDepth_ = KnobVal(Knob::Main);
-			fxLive_  = (fxCurrent_ != Fx::None);
+
+			// The SHIFT names the slot, so which layer a gesture writes to is
+			// fixed by how it is played rather than by which effect it is.
+			if (fxCurrent_ != Fx::None) fxLiveSlot_ = shift;
 			return;
 		}
 
@@ -911,6 +914,12 @@ private:
 		// which is the behaviour asked for.
 		int8_t slot = SlotForShiftedTap(levels_.Current(), ModeShift());
 		if (slot >= 0) fxHeld_ = static_cast<uint8_t>(1u << slot);
+
+		// FX2 lights its pads and does nothing else — it has no effects of its
+		// own yet, and deliberately so: FX1 now holds twelve, which makes
+		// "should a second bank exist at all, or is switch+D better spent on
+		// something else" a live question. Wiring three arbitrary effects in
+		// here would answer it by accident. See the file header.
 	}
 
 	// --- shared control -------------------------------------------------
@@ -934,27 +943,25 @@ private:
 		// FX are momentary: an effect lasts exactly as long as its button is
 		// held, so it is read as STATE every tick rather than latched on an
 		// edge.
-		fxLive_ = false;
+		fxLiveSlot_ = -1;
 		if (mode_ == Mode::Fx1 || mode_ == Mode::Fx2) FxUpdate();
 
 		// (A recorded effect expires in LOOP ticks, counted down where the
 		// loop advances — see kFxPlaybackHold.)
 
-		// THE HAND WINS. Same rule the knob lanes use: while you are holding
-		// an effect it is yours, and the recording is muted underneath rather
-		// than fighting it. Let go and the pattern's own effect returns.
-		if (fxLive_)
+		// Each slot resolves independently: THE HAND WINS on the slot it is
+		// holding, and every other slot keeps replaying whatever was recorded
+		// under its shift. That is what makes the layers layer — holding a
+		// crush under B does not silence the gate recorded under D.
+		for (int8_t s = 0; s < kNumFxSlots; s++)
 		{
-			fx_.Set(fxCurrent_, fxDepth_);
-		}
-		else if (fxPlayback_ != 0)
-		{
-			fx_.Set(static_cast<Fx>(FxOf(fxPlayback_)),
-			        FxDepthOf(fxPlayback_));
-		}
-		else
-		{
-			fx_.Set(Fx::None, 0);
+			if (s == fxLiveSlot_)
+				fx_.SetSlot(s, fxCurrent_, fxDepth_);
+			else if (fxPlayback_[s] != 0)
+				fx_.SetSlot(s, static_cast<Fx>(FxOf(fxPlayback_[s])),
+				            FxDepthOf(fxPlayback_[s]));
+			else
+				fx_.SetSlot(s, Fx::None, 0);
 		}
 
 		loop_.SetTempo(KnobVal(Knob::X));
@@ -985,12 +992,20 @@ private:
 		// would replay a filter sweep that never actually happened. The
 		// effect itself is recorded instead, as a PARAMETER — see below.
 		if (recording_)
+		{
+			// Only the slot the hand is holding writes. The other three keep
+			// whatever earlier passes put in them, which is exactly why there
+			// are four lanes instead of one.
+			uint8_t fxPacked[kNumFxSlots] = {};
+			if (fxLiveSlot_ >= 0)
+				fxPacked[fxLiveSlot_] =
+					PackFx(static_cast<uint8_t>(fxCurrent_), fxDepth_);
+
 			loop_.RecordKnobs(filterLane_.HandOwns() && !mainIsDepth,
 			                  KnobVal(Knob::Main),
 			                  toneLane_.HandOwns(), KnobVal(Knob::Y),
-			                  fxLive_ ? PackFx(static_cast<uint8_t>(fxCurrent_),
-			                                   fxDepth_)
-			                          : 0);
+			                  fxPacked);
+		}
 
 		if (!playing_) return;
 
@@ -1018,7 +1033,9 @@ private:
 			// A replayed effect expires in LOOP ticks, so it is aged HERE
 			// rather than on the control tick — see kFxPlaybackHold for why
 			// the distinction matters across the tempo range.
-			if (fxPlaybackTicks_ > 0 && --fxPlaybackTicks_ == 0) fxPlayback_ = 0;
+			for (int8_t s = 0; s < kNumFxSlots; s++)
+				if (fxPlaybackTicks_[s] > 0 && --fxPlaybackTicks_[s] == 0)
+					fxPlayback_[s] = 0;
 
 			// Pulse Out 2 is a CLICK TRACK: one blip per crotchet, so you have
 			// something to record along to. Driven from BeatEdge() rather than
@@ -1040,15 +1057,17 @@ private:
 			if (haveKnob[kLaneFilter]) filterLane_.Playback(knob[kLaneFilter]);
 			if (haveKnob[kLaneTone])   toneLane_.Playback(knob[kLaneTone]);
 
-			// The FX lane is a LEVEL, not an edge: an effect is recorded for
-			// every tick it was held, so a tick that carries no FX event means
-			// the effect had stopped. Latch what arrived and let it expire, so
-			// the gap between recorded samples does not chatter the effect on
-			// and off at the sampling rate.
-			if (haveKnob[kLaneFx])
+			// The FX lanes are LEVELS, not edges: an effect is recorded for
+			// every tick it was held, so a tick that carries no event for a
+			// lane means that lane's effect had stopped. Latch what arrives
+			// and let it expire, so the gap between recorded samples does not
+			// chatter the effect on and off at the sampling rate.
+			for (int8_t s = 0; s < kNumFxSlots; s++)
 			{
-				fxPlayback_      = static_cast<uint8_t>(knob[kLaneFx] >> 4);
-				fxPlaybackTicks_ = kFxPlaybackHold;
+				const uint8_t lane = FxLaneForShift(s);
+				if (!haveKnob[lane]) continue;
+				fxPlayback_[s]      = static_cast<uint8_t>(knob[lane] >> 4);
+				fxPlaybackTicks_[s] = kFxPlaybackHold;
 			}
 
 			for (int i = 0; i < n; i++)
@@ -1637,13 +1656,16 @@ private:
 
 	// --- performance effects (FX1) ---------------------------------------
 	FxRack   fx_;
-	Fx       fxCurrent_ = Fx::None;   ///< the effect the HAND is holding
-	int32_t  fxDepth_   = 2048;       ///< its depth, from the Main knob
-	bool     fxLive_    = false;      ///< true while the hand holds one
-	/// The effect the LOOP is replaying, packed as fx<<4 | depth>>8. Zero
-	/// when the recorded pass is not holding anything.
-	uint8_t  fxPlayback_      = 0;
-	int32_t  fxPlaybackTicks_ = 0;
+	/// Which SHIFT the hand is currently holding an effect under, or -1.
+	/// That shift names the slot AND the automation lane, so one index
+	/// carries both.
+	int8_t   fxLiveSlot_ = -1;
+	Fx       fxCurrent_  = Fx::None;   ///< the effect the HAND is holding
+	int32_t  fxDepth_    = 2048;       ///< its depth, from the Main knob
+	/// What the LOOP is replaying per slot, packed fx<<4 | depth>>8. Zero
+	/// means that slot's recorded pass is not holding anything.
+	uint8_t  fxPlayback_[kNumFxSlots]      = {};
+	int32_t  fxPlaybackTicks_[kNumFxSlots] = {};
 	/// Half-time alternates this, advancing the loop on every other tick.
 	bool     halfPhase_ = false;
 	/// The last voice the loop fired, for STUTTER to repeat.

@@ -22,14 +22,24 @@ LOOP_TICKS = TICKS_PER_BEAT * BEATS_PER_LOOP      # 768
 QUANT_TICKS = TICKS_PER_BEAT // 4                 # 12
 NUM_VOICES = 12          # the looper stores VOICES, not key combos
 MAX_EVENTS = 512
-MAX_KNOB_EVENTS = 192
+MAX_KNOB_EVENTS = 320
 KNOB_EVENT = 0x80
 THIS_PASS = 0x40
 KNOB_REPLACE_WINDOW = 12
-# Must stay a POWER OF TWO: lane_of() masks with NUM_LANES-1, so three lanes
-# need four slots. Mirrors looper.h's KnobLane.
-NUM_LANES = 4
-LANE_FILTER, LANE_TONE, LANE_FX = 0, 1, 2
+# Must stay a POWER OF TWO: lane_of() masks with NUM_LANES-1. Six lanes
+# therefore need eight slots. Mirrors looper.h's KnobLane.
+NUM_LANES = 8
+LANE_FILTER, LANE_TONE = 0, 1
+LANE_FX_A, LANE_FX_B, LANE_FX_C, LANE_FX_D = 2, 3, 4, 5
+LANE_FX_FIRST = LANE_FX_A
+NUM_FX_SLOTS = 4
+
+# Shift C's lane is the TIMING one and never joins the audio chain.
+LANE_TIMING = LANE_FX_C
+
+
+def fx_lane_for_shift(shift):
+    return LANE_FX_FIRST + shift
 
 
 def pack_fx(fx, depth):
@@ -781,15 +791,52 @@ def test_fx_lane_records_while_held():
     packed = pack_fx(3, 2048)
     for t in (0, 8, 16):
         lp.play_head = t
-        lp.record_knob_at(packed << 4, LANE_FX)
+        lp.record_knob_at(packed << 4, LANE_FX_B)
 
-    fx_events = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX]
+    fx_events = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_B]
     check("fx lane: a steady hold still records", len(fx_events) >= 1, True)
     # What comes back out of the event IS the packed byte, so unpack directly.
     check("fx lane: it stored the right effect",
           fx_of(fx_events[0][2]), 3)
     check("fx lane: ...and the right depth",
           fx_depth_of(fx_events[0][2]), 2048)
+
+
+def test_fx_lanes_do_not_overwrite_each_other():
+    """THE reason there are four FX lanes rather than one.
+
+    With a single lane, an effect recorded under one shift overwrote an
+    effect recorded under another wherever the two overlapped in the bar --
+    you could not have a crush on beat 1 and a gate on beat 3 coexist. One
+    lane per SHIFT means each keeps its own timeline.
+
+    This is the same replacement logic the knob lanes use, so what is really
+    being asserted is that the lane index is genuinely part of the event's
+    identity, not just decoration.
+    """
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+
+    # Two different effects, same tick, different shifts.
+    lp.play_head = 96
+    lp.record_knob_at(pack_fx(4, 2048) << 4, LANE_FX_B)   # crush, shift B
+    lp.record_knob_at(pack_fx(10, 1024) << 4, LANE_FX_D)  # gate, shift D
+
+    b = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_B]
+    d = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_D]
+    check("fx lanes: both survive on the same tick", (len(b), len(d)), (1, 1))
+    check("fx lanes: B kept its own effect",  fx_of(b[0][2]), 4)
+    check("fx lanes: D kept its own effect",  fx_of(d[0][2]), 10)
+
+    # Re-recording ONE lane must not disturb the other.
+    lp.arm_knobs()
+    lp.play_head = 96
+    lp.record_knob_at(pack_fx(5, 512) << 4, LANE_FX_B)
+
+    b = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_B]
+    d = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_D]
+    check("fx lanes: re-recording B replaced B", fx_of(b[0][2]), 5)
+    check("fx lanes: ...and left D alone",       fx_of(d[0][2]), 10)
 
 
 def main():
@@ -817,6 +864,7 @@ def main():
     test_undo_does_not_replay_the_bar_so_far()
     test_fx_packing_round_trip()
     test_fx_lane_records_while_held()
+    test_fx_lanes_do_not_overwrite_each_other()
     print()
     if FAILURES:
         print("%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

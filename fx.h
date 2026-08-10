@@ -81,42 +81,82 @@ static inline bool IsTimingFx(Fx f)
 	    || f == Fx::DoubleTime || f == Fx::Flam;
 }
 
-/// The audio-effect chain. One instance, holding whatever state the currently
-/// active effect needs.
+/// How many effects can be layered at once. One per SHIFT button — each shift
+/// owns an automation lane, so up to four recorded effects can overlap.
+constexpr int kNumFxSlots = kNumSingles;
+
+/// Shift C's slot holds the TIME family, and those cannot stack — half-time
+/// and double-time together is a contradiction, not a texture. That slot is
+/// therefore exclusive and never joins the audio chain; its effects act on
+/// the looper instead. Mirrors kLaneTiming in looper.h, which is deliberately
+/// NOT included here: fx.h is included BY the looper's caller, and pulling
+/// looper.h in would make the dependency circular for one constant.
+constexpr int kFxTimingSlot = kC;
+
+/// One effect and the state it needs, independent of the others.
 ///
-/// Only ONE effect is active at a time — the gesture is one shift plus one
-/// tap, so there is nothing to combine. That keeps this a switch rather than
-/// a chain, and keeps the per-sample cost to whichever branch is live.
+/// Each slot carries its OWN filter/decimator/gate state. Sharing one set
+/// across the chain would make two layered filters interfere — the second
+/// would read the first's charge as its own — so the cost of four copies
+/// buys correctness, not just convenience. It is about 30 bytes each.
+struct FxSlot
+{
+	Fx      fx    = Fx::None;
+	int32_t depth = 2048;
+
+	// Filter state. The three A-row effects are the same SVF read at
+	// different outputs, so one set covers all three.
+	int32_t v1 = 0, v2 = 0, g = 8000;
+
+	// Decimate: the held sample and its countdown.
+	int32_t holdVal = 0;
+	int32_t holdCnt = 0;
+
+	// Gate: free-running, so the chop stays rhythmic however late it is
+	// grabbed rather than restarting on the press.
+	uint32_t gatePhase = 0;
+
+	/// One sample through this slot alone.
+	int32_t Step(int32_t in);
+
+	/// Reset the carried state. Called when the slot changes effect, so the
+	/// new one does not open with a click of the old one's residue.
+	void Clear() { v1 = v2 = 0; holdVal = holdCnt = 0; }
+};
+
+/// The effect chain: up to four slots processed in SERIES.
+///
+/// Series, not parallel, and not "one wins". Crush on one layer and gate on
+/// another gives a crushed AND gated bus, which is the reason for layering at
+/// all. Slots are walked in shift order, so the chain is deterministic —
+/// A then B then D — rather than depending on the order they were recorded.
+///
+/// Shift C's slot is the TIMING one and never appears in the audio chain: its
+/// effects act on the looper instead. See kLaneTiming in looper.h.
 class FxRack
 {
 public:
-	/// Set the active effect and its depth. Control rate.
-	/// `depth` is the Main knob, 0..4095.
-	void Set(Fx f, int32_t depth);
+	/// Set one slot's effect and depth. Control rate.
+	/// `slot` is the shift index, 0..3. `depth` is 0..4095.
+	void SetSlot(int slot, Fx f, int32_t depth);
 
-	Fx Active() const { return active_; }
+	/// Clear every slot. Cheaper than four calls and says what it means.
+	void Clear();
 
-	/// How the loop should be re-timed, if at all.
+	/// How the loop should be re-timed, if at all. Only the timing slot can
+	/// ask for this, so there is never a conflict to resolve.
 	FxTiming Timing() const;
 
-	/// One audio sample through whatever is active. Pass-through when None.
+	/// True if any slot is doing anything, for the audio path to skip the
+	/// whole chain when nothing is active.
+	bool Any() const { return active_ != 0; }
+
+	/// One audio sample through the whole chain.
 	int32_t Step(int32_t in);
 
 private:
-	Fx      active_ = Fx::None;
-	int32_t depth_  = 2048;
-
-	// Filter state, shared by the three A-row effects — they are the same
-	// SVF read at different outputs, so one set of state covers all three.
-	int32_t v1_ = 0, v2_ = 0, g_ = 8000;
-
-	// Decimate: the held sample and its countdown.
-	int32_t holdVal_ = 0;
-	int32_t holdCnt_ = 0;
-
-	// Gate: a free-running counter, so the chop is rhythmic rather than
-	// dependent on when the button happened to be pressed.
-	uint32_t gatePhase_ = 0;
+	FxSlot   slot_[kNumFxSlots];
+	uint8_t  active_ = 0;      ///< bit per slot, for a quick "anything on?"
 };
 
 } // namespace nko

@@ -12,15 +12,29 @@
 // reflashing the firmware does not move or wipe it.
 //
 // Ported from WorkshopBio/samplestore.h, with the mode x round-robin-variant
-// grid collapsed to 12 flat voice slots — NIBBLE-KO has no modes and (for now,
-// see drums.h's VoiceSource TODO) no round robin, just one sample per slot.
+// grid collapsed to 12 flat voice slots — NIBBLE-KO has no modes and no round
+// robin, just one sample per slot.
 //
-// TODO(design session): ResolveSample() below is scaffolding — it is not
-// called from anywhere yet, because DrumVoice has no PCM playback path (see
-// drums.h). Wire it in once that exists. The flash layout constants
-// (kUserRegionOff etc.) are a starting point, not measured against this
-// card's actual code+synth-table size; checksize.cmake will catch it if
-// they overlap once the real build exists.
+// ResolveSample() IS wired in: DrumKit::TriggerVoice calls it per hit, and a
+// voice with no sample falls through to the synth engine. The baked half
+// works today; the user-flash half is still a stub, so HaveUserSamples()
+// always answers false until webui.cpp learns to write the region.
+//
+// EVERYTHING HERE IS INDIRECTION, DELIBERATELY. The full chain is:
+//
+//     pattern event -> voice index -> kVoiceSample -> bank index -> here
+//
+// and each arrow is a lookup rather than a copy. That is what lets uploads
+// change what a pattern SOUNDS like without touching the pattern, which stays
+// a bare list of voice indices (see looper.h's note on LoopEvent). It also
+// means two voices can share a recording, and that re-pointing a slot costs
+// one byte rather than a second copy of the audio.
+//
+// TODO(webui): the user region's layout is a starting point, not measured
+// against this card's real code+bank size. checksize.cmake guards the
+// boundary once uploads are live. When they are, kVoiceSample stops being a
+// compile-time table and becomes a runtime one loaded from flash beside the
+// audio — the shape is already right, since it is indices rather than data.
 
 #pragma once
 #include <stdint.h>

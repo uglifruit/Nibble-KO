@@ -784,6 +784,35 @@ def test_undo_does_not_replay_the_bar_so_far():
           [c for (_t, c) in fired], [3])
 
 
+def test_patterns_store_voices_not_sounds():
+    """A pattern must hold VOICE INDICES and nothing about what they sound
+    like, so uploading a sample or re-pointing a slot changes what an existing
+    pattern plays without touching the pattern.
+
+    record_hit already asserts the value is a voice rather than a combo. What
+    this pins down is the range: every stored hit has to be addressable as a
+    voice index, because that is what makes the same four bars playable on a
+    card with a completely different sample set.
+
+    The failure this guards against is someone "optimising" the resolved
+    sample pointer into the event to save an indirection -- which would be
+    faster, and would make patterns non-portable and un-transferable.
+    """
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+
+    for v in range(NUM_VOICES):
+        lp.play_head = v * 8
+        lp.record_hit(v)
+
+    hits = [e for e in lp.events if not is_knob(e[1])]
+    check("agnostic: every voice recorded", len(hits), NUM_VOICES)
+    check("agnostic: all stored as plain voice indices",
+          sorted(e[1] for e in hits), list(range(NUM_VOICES)))
+    # Four bytes, and the sound-bearing one is velocity -- not a sample id.
+    check("agnostic: an event is still 3 fields", len(hits[0]), 3)
+
+
 def test_pattern_recall_keeps_the_playhead():
     """Recall swaps the pattern WITHOUT moving the playhead, so switching
     mid-bar reads as the band changing part rather than a stop and start.
@@ -1017,6 +1046,7 @@ def main():
     test_undo_is_one_way()
     test_undo_with_no_snapshot()
     test_undo_does_not_replay_the_bar_so_far()
+    test_patterns_store_voices_not_sounds()
     test_pattern_recall_keeps_the_playhead()
     test_pattern_recall_of_empty_slot_is_a_noop()
     test_pattern_store_is_a_snapshot()

@@ -208,6 +208,28 @@ browser will be able to re-point it at runtime. See
 | **LED 4 / 5** | recording / beat |
 | **CV Out 1 / 2** | unassigned |
 
+## Patterns are sound-agnostic
+
+Worth stating because it shapes what everything else can be: a recorded
+pattern holds **voice indices**, never sounds. "Slot 4 fired at tick 96" —
+not which sample slot 4 happens to play. The chain to audio is
+
+```
+pattern event → voice index → voice/sample map → bank index → audio
+```
+
+and only the last two links know anything about sound.
+
+So re-pointing a voice at a different sample, or uploading a new one, changes
+what every existing pattern *plays* without altering a byte of the pattern.
+The same four bars can be a Cheetah kit or your own recordings. It also means
+patterns will transfer over the web app as bare event lists — under 2KB, no
+audio attached — and land on a card with a completely different sample set.
+
+That falls out of NIBBLE's decision to record the *voice* rather than the
+*gesture*, which it made for an unrelated reason: so re-arranging the gesture
+map couldn't silently change an old loop.
+
 ## What isn't done
 
 - **Calibration is not saved.** The card recalibrates at every power-up. The

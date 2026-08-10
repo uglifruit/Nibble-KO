@@ -23,6 +23,27 @@ namespace nko {
 
 /// One recorded event. Exactly 4 bytes; the array is the card's largest single
 /// allocation and it is still only 2KB.
+///
+/// A PATTERN IS SOUND-AGNOSTIC, and that is a property to protect rather than
+/// an accident. `what` holds a VOICE INDEX — "slot 4" — never a sample, a
+/// pointer, or anything describing what slot 4 currently sounds like. The
+/// chain from event to audio is:
+///
+///     event -> voice index -> kVoiceSample -> bank index -> ResolveSample
+///
+/// and only the last two links know anything about sound. So re-pointing a
+/// voice at a different sample, or uploading a new one over USB, changes what
+/// every existing pattern PLAYS without touching a byte of the patterns
+/// themselves. The same four bars can be a Cheetah kit or a user upload.
+///
+/// This falls out of NIBBLE's decision to record the VOICE rather than the
+/// GESTURE (see RecordHit), which it made so that re-arranging the gesture map
+/// could not silently change an old loop. The same indirection is what makes
+/// patterns portable across sample sets — and it is why patterns will
+/// transfer over the web app as bare event lists, with no audio attached.
+///
+/// Storing a resolved pointer here would be faster by one indirection and
+/// would break all of that, so: don't.
 struct LoopEvent
 {
 	uint16_t tick;    ///< 0..kLoopTicks-1, RAW (unquantised)

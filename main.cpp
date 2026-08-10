@@ -869,7 +869,17 @@ private:
 						fxHeld_ = static_cast<uint8_t>(1u << tap);
 				}
 			}
-			fxDepth_ = filterLane_.Value();
+			// The RAW knob, not filterLane_.Value().
+			//
+			// That lane's Value() falls back to its recorded playback when the
+			// hand is still — and the filter lane is deliberately empty in
+			// FX1, because we stop recording it here. So depth was reading a
+			// lane that has nothing in it, and on playback it silently became
+			// "wherever the knob is sitting now" instead of what was
+			// performed. The effect replayed; its depth did not.
+			//
+			// Depth belongs to the FX lane, and the FX lane alone.
+			fxDepth_ = KnobVal(Knob::Main);
 			fxLive_  = (fxCurrent_ != Fx::None);
 			return;
 		}

@@ -49,6 +49,12 @@
 // holds twelve, whether a second bank should exist at all is a real
 // question, and worth answering after playing these rather than before.
 //
+// While FX1 is the mode, Main is the effect DEPTH and NOT the DJ filter —
+// one knob cannot do both, and sweeping a crush depth would sweep the filter
+// with it. The filter latches where it was, and picks up again only when the
+// knob is turned back THROUGH that value, so leaving the mode never jumps
+// it. Same convention as a DJ mixer recalling a patch. See SoftPickup.
+//
 // A bare press does nothing in these modes. That is not a restriction, it is
 // the only thing that WORKS: to press A twice you must pass back through the
 // rest voltage, so a bare-press toggle can mute a group and never unmute it.
@@ -273,6 +279,66 @@ struct AutoKnob
 	{
 		return (HandOwns() || playback_ < 0) ? smooth_ : playback_;
 	}
+};
+
+/// SOFT PICKUP for a knob that two things want.
+///
+/// In FX1 the Main knob sets the effect's depth, so it cannot also be driving
+/// the DJ filter — sweeping a crush depth would sweep the filter with it. The
+/// filter therefore LATCHES at whatever it was when the mode was entered.
+///
+/// Handing it back is the interesting half. Snapping the filter to wherever
+/// the knob physically ended up would jump it, often drastically, at the
+/// moment you leave the mode — the one moment you are least expecting a
+/// change. So the filter stays latched until the knob is turned back THROUGH
+/// the latched value, and only then does it start following again. That is
+/// the same convention a DJ mixer or a hardware synth uses when recalling a
+/// patch, and it is the only one that never jumps.
+///
+/// The catch, and the reason this is a struct rather than two lines: "passes
+/// through" needs the SIDE the knob was on when control was taken away. Only
+/// comparing for equality would never match — the knob moves in steps of
+/// several units and can step straight over the target.
+struct SoftPickup
+{
+	int32_t held_    = 2048;   ///< the value being held while parked
+	bool    parked_  = false;  ///< something else owns the knob
+	bool    above_   = false;  ///< which side of held_ the knob was on
+
+	/// Take the knob away, latching `current` as the value to hold.
+	void Park(int32_t current, int32_t knob)
+	{
+		if (parked_) return;
+		held_   = current;
+		above_  = (knob >= current);
+		parked_ = true;
+	}
+
+	/// One control tick. Returns the value the owner should use.
+	///
+	/// `active` is false once the other duty has finished with the knob; the
+	/// latch then persists only until the crossing happens.
+	int32_t Update(bool active, int32_t knob)
+	{
+		if (active)
+		{
+			// Still parked. Keep tracking which side we are on, so letting go
+			// and immediately nudging picks up from the right direction.
+			if (parked_) above_ = (knob >= held_);
+			return held_;
+		}
+
+		if (!parked_) return knob;
+
+		// Waiting for the knob to come back through the latched value.
+		const bool nowAbove = (knob >= held_);
+		if (nowAbove == above_) return held_;    // still on the same side
+
+		parked_ = false;                         // crossed: resume following
+		return knob;
+	}
+
+	bool Parked() const { return parked_; }
 };
 
 } // namespace
@@ -856,7 +922,16 @@ private:
 		const int32_t mainVal = filterLane_.Update(KnobVal(Knob::Main));
 		const int32_t toneVal = toneLane_.Update(KnobVal(Knob::Y));
 
-		djFilter_.SetKnob(mainVal);
+		// In FX1 the Main knob is the effect's DEPTH, so it must not also be
+		// sweeping the DJ filter — the filter latches where it was and only
+		// starts following again once the knob is turned back through that
+		// value. See SoftPickup: snapping it to wherever the knob happened to
+		// end up would jump the filter at the exact moment you leave the mode.
+		const bool mainIsDepth = (mode_ == Mode::Fx1);
+		if (mainIsDepth) filterPickup_.Park(djFilterVal_, mainVal);
+		djFilterVal_ = filterPickup_.Update(mainIsDepth, mainVal);
+
+		djFilter_.SetKnob(djFilterVal_);
 		toneKnob_ = toneVal;
 
 		// Record only what the HAND is doing. Recording the value that came
@@ -1507,6 +1582,12 @@ private:
 	AutoKnob filterLane_;           ///< Main knob: the DJ filter
 	AutoKnob toneLane_;             ///< Y knob: kit character
 	int32_t  toneKnob_  = 2048;     ///< the Y value voices are struck with
+
+	/// The DJ filter's own value, which is NOT simply the Main knob: in FX1
+	/// that knob is the effect depth, so the filter latches and waits to be
+	/// picked up again. See SoftPickup.
+	int32_t    djFilterVal_ = 2048;
+	SoftPickup filterPickup_;
 
 	// outputs
 	int32_t gateTimer_  = 0;

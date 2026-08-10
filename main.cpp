@@ -692,6 +692,20 @@ private:
 	// reverse/tape-stop/pitch) needs the PCM backend that drums.h still lists
 	// as TODO. Until then this only lights the LED, which is enough to test
 	// the gesture routing on hardware.
+	//
+	// IDEA, not yet decided: a mode currently has ONE shift (its own button)
+	// and three taps, so three effects. But the shift need not be fixed —
+	// Shift() already tells hold-C-tap-A from hold-A-tap-C, and DRUMS gets its
+	// twelve voices from exactly that. Allowing all four singles as shifts
+	// would give TWELVE effects per mode for no new detection: this function
+	// already takes the shift as a parameter, so it becomes a
+	// kGestureVoice-style [shift][tap] table lookup.
+	//
+	// Two things to settle first, neither technical: whether twelve effects
+	// per bank is more than a player can hold in their head, and whether FX2
+	// should then exist at all — if FX1 alone holds twelve, switch+D is free
+	// for something else. Also note the mode-reminder LED pulses the mode's
+	// single shift button, which stops meaning anything with four of them.
 
 	/// Which effect is held right now, as a bit per slot. Control rate.
 	void __not_in_flash_func(FxUpdate)()

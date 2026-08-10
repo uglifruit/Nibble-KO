@@ -44,6 +44,16 @@
 //   hold C + A/B/D   time         stutter / half-time / double-time
 //   hold D + A/B/C   dynamics     gate / flam / silence
 //
+// HOLD A SHIFT ALONE and turn Main to draw that lane's PARAMETER CURVE. It
+// needs no gesture of its own because it is the absence of one — you are
+// already holding the shift, so letting go of the tap hands the knob to the
+// curve. Each shift therefore owns two recorded lanes, an effect and a
+// parameter, performed independently: sweep a curve once, then pop the three
+// effects in and out over the top of it across later passes.
+//
+// The curve is the single source of depth. An effect reads it whether it is
+// live or replayed, so what you hear performing is exactly what records.
+//
 // Main sets each effect's depth. See fx.h for the table and fx.cpp for the
 // DSP. FX2 is deliberately left at three as a placeholder — if one bank
 // holds twelve, whether a second bank should exist at all is a real
@@ -852,9 +862,26 @@ private:
 
 		if (mode_ == Mode::Fx1)
 		{
+			// TWO gestures share the four buttons here, told apart by whether
+			// a pair or a bare single is held:
+			//
+			//   shift + tap   run one of that shift's three effects
+			//   shift alone   draw that shift's PARAMETER curve with Main
+			//
+			// The second needs no new control precisely because it is the
+			// absence of the first — you are already holding the shift, so
+			// letting go of the tap hands the knob to the curve.
+			const int8_t combo = levels_.Current();
+
+			if (combo >= 0 && combo < kNumSingles)
+			{
+				// A bare single: this shift's parameter is what Main writes.
+				fxParShift_ = combo;
+				return;
+			}
+
 			// CURRENT(), not Sounding() — an effect must die on release. See
 			// the long note below, which is still the reason.
-			const int8_t combo = levels_.Current();
 			const int8_t shift = levels_.Shift();
 			if (combo >= kNumSingles && shift >= 0 && shift < kNumSingles)
 			{
@@ -868,22 +895,18 @@ private:
 					if (fxCurrent_ != Fx::None)
 						fxHeld_ = static_cast<uint8_t>(1u << tap);
 				}
-			}
-			// The RAW knob, not filterLane_.Value().
-			//
-			// That lane's Value() falls back to its recorded playback when the
-			// hand is still — and the filter lane is deliberately empty in
-			// FX1, because we stop recording it here. So depth was reading a
-			// lane that has nothing in it, and on playback it silently became
-			// "wherever the knob is sitting now" instead of what was
-			// performed. The effect replayed; its depth did not.
-			//
-			// Depth belongs to the FX lane, and the FX lane alone.
-			fxDepth_ = KnobVal(Knob::Main);
 
-			// The SHIFT names the slot, so which layer a gesture writes to is
-			// fixed by how it is played rather than by which effect it is.
-			if (fxCurrent_ != Fx::None) fxLiveSlot_ = shift;
+				// Main still writes the lane's curve while an effect is held,
+				// so there is ONE source of truth for depth: what you hear
+				// while performing is exactly what gets recorded, and the
+				// effect reads the same curve whether it is live or replayed.
+				fxParShift_ = shift;
+
+				// The SHIFT names the slot, so which layer a gesture writes
+				// to is fixed by how it is played rather than by which effect
+				// it is.
+				if (fxCurrent_ != Fx::None) fxLiveSlot_ = shift;
+			}
 			return;
 		}
 
@@ -944,6 +967,7 @@ private:
 		// held, so it is read as STATE every tick rather than latched on an
 		// edge.
 		fxLiveSlot_ = -1;
+		fxParShift_ = -1;
 		if (mode_ == Mode::Fx1 || mode_ == Mode::Fx2) FxUpdate();
 
 		// (A recorded effect expires in LOOP ticks, counted down where the
@@ -953,13 +977,20 @@ private:
 		// holding, and every other slot keeps replaying whatever was recorded
 		// under its shift. That is what makes the layers layer — holding a
 		// crush under B does not silence the gate recorded under D.
+		//
+		// Depth comes from the slot's own PARAMETER curve, whichever way the
+		// effect arrived. One source of truth: a replayed effect sweeps
+		// exactly as it did when performed, and a live one reads the same
+		// curve the hand is drawing.
 		for (int8_t s = 0; s < kNumFxSlots; s++)
 		{
+			const int32_t depth = (s == fxParShift_) ? KnobVal(Knob::Main)
+			                                         : fxParPlayback_[s];
+
 			if (s == fxLiveSlot_)
-				fx_.SetSlot(s, fxCurrent_, fxDepth_);
+				fx_.SetSlot(s, fxCurrent_, depth);
 			else if (fxPlayback_[s] != 0)
-				fx_.SetSlot(s, static_cast<Fx>(FxOf(fxPlayback_[s])),
-				            FxDepthOf(fxPlayback_[s]));
+				fx_.SetSlot(s, static_cast<Fx>(FxOf(fxPlayback_[s])), depth);
 			else
 				fx_.SetSlot(s, Fx::None, 0);
 		}
@@ -998,13 +1029,14 @@ private:
 			// are four lanes instead of one.
 			uint8_t fxPacked[kNumFxSlots] = {};
 			if (fxLiveSlot_ >= 0)
-				fxPacked[fxLiveSlot_] =
-					PackFx(static_cast<uint8_t>(fxCurrent_), fxDepth_);
+				fxPacked[fxLiveSlot_] = PackFx(static_cast<uint8_t>(fxCurrent_));
 
 			loop_.RecordKnobs(filterLane_.HandOwns() && !mainIsDepth,
 			                  KnobVal(Knob::Main),
 			                  toneLane_.HandOwns(), KnobVal(Knob::Y),
-			                  fxPacked);
+			                  fxPacked,
+			                  fxParShift_, KnobVal(Knob::Main),
+			                  filterLane_.HandOwns());
 		}
 
 		if (!playing_) return;
@@ -1065,9 +1097,18 @@ private:
 			for (int8_t s = 0; s < kNumFxSlots; s++)
 			{
 				const uint8_t lane = FxLaneForShift(s);
-				if (!haveKnob[lane]) continue;
-				fxPlayback_[s]      = static_cast<uint8_t>(knob[lane] >> 4);
-				fxPlaybackTicks_[s] = kFxPlaybackHold;
+				if (haveKnob[lane])
+				{
+					fxPlayback_[s]      = static_cast<uint8_t>(knob[lane] >> 4);
+					fxPlaybackTicks_[s] = kFxPlaybackHold;
+				}
+
+				// The PARAMETER lane does not expire the way the effect lane
+				// does. A curve is a position, not a hold — it stays wherever
+				// it was last set until the next recorded point moves it,
+				// exactly as the filter and tone lanes behave.
+				const uint8_t par = ParLaneForShift(s);
+				if (haveKnob[par]) fxParPlayback_[s] = knob[par];
 			}
 
 			for (int i = 0; i < n; i++)
@@ -1661,11 +1702,16 @@ private:
 	/// carries both.
 	int8_t   fxLiveSlot_ = -1;
 	Fx       fxCurrent_  = Fx::None;   ///< the effect the HAND is holding
-	int32_t  fxDepth_    = 2048;       ///< its depth, from the Main knob
-	/// What the LOOP is replaying per slot, packed fx<<4 | depth>>8. Zero
-	/// means that slot's recorded pass is not holding anything.
+	/// Which lane's PARAMETER curve the Main knob is drawing, or -1. Set by
+	/// holding a shift — with or without a tap, since the curve is the single
+	/// source of depth either way.
+	int8_t   fxParShift_ = -1;
+	/// Which effect the LOOP is replaying per slot, or 0 for none.
 	uint8_t  fxPlayback_[kNumFxSlots]      = {};
 	int32_t  fxPlaybackTicks_[kNumFxSlots] = {};
+	/// Each slot's replayed parameter curve. A position, not a hold, so it
+	/// does not expire — it stays until the next recorded point moves it.
+	int32_t  fxParPlayback_[kNumFxSlots] = { 2048, 2048, 2048, 2048 };
 	/// Half-time alternates this, advancing the loop on every other tick.
 	bool     halfPhase_ = false;
 	/// The last voice the loop fired, for STUTTER to repeat.

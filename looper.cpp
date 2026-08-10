@@ -203,7 +203,8 @@ void Looper::RecordHit(int8_t voice, uint8_t velocity)
 
 void Looper::RecordKnobs(bool filterMoving, int32_t filterKnob,
                          bool toneMoving,   int32_t toneKnob,
-                         const uint8_t *fxPacked)
+                         const uint8_t *fxPacked,
+                         int8_t parShift, int32_t parKnob, bool parMoving)
 {
 	// One countdown for ALL lanes, checked once and reset once. Letting each
 	// lane test and consume it separately would mean whichever asked first ate
@@ -226,10 +227,19 @@ void Looper::RecordKnobs(bool filterMoving, int32_t filterKnob,
 	// Only the lane whose shift is held writes. The rest are left untouched,
 	// so an effect recorded under a different shift on an earlier pass
 	// survives — which is why there are four lanes rather than one.
-	if (!fxPacked) return;
-	for (int8_t s = 0; s < kNumSingles; s++)
-		if (fxPacked[s] != 0)
-			RecordLane(FxLaneForShift(s), static_cast<int32_t>(fxPacked[s]) << 4);
+	if (fxPacked)
+		for (int8_t s = 0; s < kNumSingles; s++)
+			if (fxPacked[s] != 0)
+				RecordLane(FxLaneForShift(s),
+				           static_cast<int32_t>(fxPacked[s]) << 4);
+
+	// The parameter curve, on the other hand, follows the KNOB LANE rules: it
+	// writes only while the knob is genuinely moving. An effect held steady
+	// still has to be recorded every tick or playback would never release it;
+	// a parameter held steady is a flat line that would overwrite whatever
+	// curve an earlier pass drew underneath.
+	if (parShift >= 0 && parShift < kNumSingles && parMoving)
+		RecordLane(ParLaneForShift(parShift), parKnob);
 }
 
 /// Is `tick` within the replace window of the playhead, the short way round?

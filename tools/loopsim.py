@@ -26,12 +26,14 @@ MAX_KNOB_EVENTS = 320
 KNOB_EVENT = 0x80
 THIS_PASS = 0x40
 KNOB_REPLACE_WINDOW = 12
-# Must stay a POWER OF TWO: lane_of() masks with NUM_LANES-1. Six lanes
-# therefore need eight slots. Mirrors looper.h's KnobLane.
-NUM_LANES = 8
+# Must stay a POWER OF TWO: lane_of() masks with NUM_LANES-1. Ten lanes
+# therefore need sixteen slots. Mirrors looper.h's KnobLane.
+NUM_LANES = 16
 LANE_FILTER, LANE_TONE = 0, 1
 LANE_FX_A, LANE_FX_B, LANE_FX_C, LANE_FX_D = 2, 3, 4, 5
+LANE_PAR_A, LANE_PAR_B, LANE_PAR_C, LANE_PAR_D = 6, 7, 8, 9
 LANE_FX_FIRST = LANE_FX_A
+LANE_PAR_FIRST = LANE_PAR_A
 NUM_FX_SLOTS = 4
 
 # Shift C's lane is the TIMING one and never joins the audio chain.
@@ -42,13 +44,17 @@ def fx_lane_for_shift(shift):
     return LANE_FX_FIRST + shift
 
 
-def pack_fx(fx, depth):
-    """Four bits of effect index, four of depth. Mirrors looper.h's PackFx."""
-    return ((fx << 4) | ((depth >> 8) & 0x0F)) & 0xFF
+def par_lane_for_shift(shift):
+    return LANE_PAR_FIRST + shift
 
 
-def fx_of(v):       return v >> 4
-def fx_depth_of(v): return (v & 0x0F) << 8
+def pack_fx(fx):
+    """The FX lane carries only WHICH effect; depth lives in its own
+    parameter lane now. Mirrors looper.h's PackFx."""
+    return fx & 0xFF
+
+
+def fx_of(v): return v
 
 
 def is_knob(what):
@@ -755,25 +761,61 @@ def test_undo_does_not_replay_the_bar_so_far():
           [c for (_t, c) in fired], [3])
 
 
-def test_fx_packing_round_trip():
-    """An FX lane event carries WHICH effect and HOW DEEP in one byte, and it
-    has to survive the same value>>4 / <<4 round trip the knob lanes use.
+def test_undo_restores_every_lane():
+    """Undo must put back ALL of it -- hits, filter, tone, the four effect
+    lanes and the four parameter lanes -- not just the drum hits.
 
-    Depth deliberately loses resolution -- 4095 becomes 16 steps. What must
-    NOT be lost is the effect index, because landing on the wrong one plays a
-    completely different effect rather than a slightly wrong one.
+    This holds for a structural reason worth stating: every lane lives in the
+    SAME events_ array, distinguished only by the lane bits of `what`. So
+    snapshotting the array covers everything by construction, and the risk is
+    not that a lane gets missed but that someone later "optimises" the
+    snapshot into something selective. This test is what would catch that.
+    """
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+
+    # Something in every kind of lane.
+    lp.play_head = 0;  lp.record_hit(3)
+    lp.play_head = 96
+    lp.record_knob_at(2000, LANE_FILTER)
+    lp.record_knob_at(1500, LANE_TONE)
+    for s in range(NUM_FX_SLOTS):
+        lp.record_knob_at(pack_fx(s + 1) << 4, fx_lane_for_shift(s))
+        lp.record_knob_at(1000 + s * 300,      par_lane_for_shift(s))
+
+    before = [list(e) for e in lp.events]
+    check("undo/lanes: everything recorded", len(before), 11)
+
+    # Arm, then scribble over every one of them.
+    lp.snapshot()
+    lp.arm_knobs()
+    lp.play_head = 200; lp.record_hit(9)
+    lp.play_head = 96
+    lp.record_knob_at(10, LANE_FILTER)
+    lp.record_knob_at(20, LANE_TONE)
+    for s in range(NUM_FX_SLOTS):
+        lp.record_knob_at(pack_fx(11) << 4, fx_lane_for_shift(s))
+        lp.record_knob_at(4000,             par_lane_for_shift(s))
+
+    check("undo/lanes: the overdub changed things", lp.events == before, False)
+    check("undo/lanes: undo reported success", lp.undo(), True)
+    check("undo/lanes: every lane came back", lp.events, before)
+
+
+def test_fx_packing_round_trip():
+    """The FX lane carries the effect INDEX, and it has to survive the same
+    value>>4 / <<4 round trip the knob lanes use.
+
+    Depth used to share this byte, four bits each, which cost a sweep most of
+    its resolution. It has its own lane now -- so what must survive here is
+    the index, because landing on the wrong one plays a completely different
+    effect rather than a slightly wrong one.
     """
     for fx in range(12):
-        for depth in (0, 255, 256, 2048, 4095):
-            packed = pack_fx(fx, depth)
-            # The lane stores value>>4 after being handed value<<4.
-            stored = (packed << 4) >> 4
-            check("fx pack: effect %d survives depth %d" % (fx, depth),
-                  fx_of(stored), fx)
-            # Depth quantises DOWN to a multiple of 256, never up past 4095.
-            d = fx_depth_of(stored)
-            check("fx pack: depth %d stays in range" % depth,
-                  0 <= d <= 3840, True)
+        packed = pack_fx(fx)
+        stored = ((packed << 4) >> 4) & 0xFF
+        check("fx pack: effect %d survives the round trip" % fx,
+              fx_of(stored), fx)
 
 
 def test_fx_lane_records_while_held():
@@ -783,23 +825,48 @@ def test_fx_lane_records_while_held():
     lp = Looper()
     lp.set_tempo_bpm(120)
 
-    # Three samples of the same effect at the same depth, as a hold produces.
-    #
-    # main.cpp hands RecordKnobs the packed byte scaled <<4, because the lane
-    # stores value>>4 -- that round trip is what keeps the byte intact. The
-    # test has to do the same or it is testing a call that never happens.
-    packed = pack_fx(3, 2048)
+    packed = pack_fx(3)
     for t in (0, 8, 16):
         lp.play_head = t
         lp.record_knob_at(packed << 4, LANE_FX_B)
 
     fx_events = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_B]
     check("fx lane: a steady hold still records", len(fx_events) >= 1, True)
-    # What comes back out of the event IS the packed byte, so unpack directly.
-    check("fx lane: it stored the right effect",
-          fx_of(fx_events[0][2]), 3)
-    check("fx lane: ...and the right depth",
-          fx_depth_of(fx_events[0][2]), 2048)
+    check("fx lane: it stored the right effect", fx_of(fx_events[0][2]), 3)
+
+
+def test_parameter_lane_is_separate_from_the_effect():
+    """Each shift owns TWO lanes: which effect runs, and that lane's parameter
+    curve. Separate because they are PERFORMED separately -- draw a curve by
+    holding the shift alone, then pop effects in and out over the top without
+    re-recording the curve.
+
+    If they shared a lane, changing one would destroy the other, which is the
+    whole thing this split exists to prevent.
+    """
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+
+    lp.play_head = 96
+    lp.record_knob_at(pack_fx(4) << 4, LANE_FX_B)   # crush under shift B
+    lp.record_knob_at(3000, LANE_PAR_B)             # and a depth curve for B
+
+    fx = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_B]
+    par = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_PAR_B]
+    check("par lane: effect and parameter coexist", (len(fx), len(par)), (1, 1))
+    check("par lane: the effect is intact", fx_of(fx[0][2]), 4)
+    # The parameter keeps a full byte of resolution now, not four bits.
+    check("par lane: the curve kept its value", par[0][2], 3000 >> 4)
+
+    # Re-drawing the curve must not disturb which effect is running.
+    lp.arm_knobs()
+    lp.play_head = 96
+    lp.record_knob_at(1000, LANE_PAR_B)
+
+    fx = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_B]
+    par = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_PAR_B]
+    check("par lane: re-drawing replaced the curve", par[0][2], 1000 >> 4)
+    check("par lane: ...and left the effect alone", fx_of(fx[0][2]), 4)
 
 
 def test_fx_lanes_do_not_overwrite_each_other():
@@ -819,8 +886,8 @@ def test_fx_lanes_do_not_overwrite_each_other():
 
     # Two different effects, same tick, different shifts.
     lp.play_head = 96
-    lp.record_knob_at(pack_fx(4, 2048) << 4, LANE_FX_B)   # crush, shift B
-    lp.record_knob_at(pack_fx(10, 1024) << 4, LANE_FX_D)  # gate, shift D
+    lp.record_knob_at(pack_fx(4) << 4, LANE_FX_B)    # crush, shift B
+    lp.record_knob_at(pack_fx(10) << 4, LANE_FX_D)   # gate, shift D
 
     b = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_B]
     d = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_D]
@@ -831,7 +898,7 @@ def test_fx_lanes_do_not_overwrite_each_other():
     # Re-recording ONE lane must not disturb the other.
     lp.arm_knobs()
     lp.play_head = 96
-    lp.record_knob_at(pack_fx(5, 512) << 4, LANE_FX_B)
+    lp.record_knob_at(pack_fx(5) << 4, LANE_FX_B)
 
     b = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_B]
     d = [e for e in lp.events if is_knob(e[1]) and lane_of(e[1]) == LANE_FX_D]
@@ -862,9 +929,11 @@ def main():
     test_undo_is_one_way()
     test_undo_with_no_snapshot()
     test_undo_does_not_replay_the_bar_so_far()
+    test_undo_restores_every_lane()
     test_fx_packing_round_trip()
     test_fx_lane_records_while_held()
     test_fx_lanes_do_not_overwrite_each_other()
+    test_parameter_lane_is_separate_from_the_effect()
     print()
     if FAILURES:
         print("%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

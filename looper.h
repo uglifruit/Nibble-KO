@@ -54,23 +54,42 @@ constexpr uint8_t kKnobEvent = 0x80;
 ///
 /// kNumLanes must stay a POWER OF TWO: LaneOf() masks with kNumLanes-1. Six
 /// lanes therefore need eight slots; the last two are spare.
+/// Each shift owns TWO lanes: which effect is running, and that lane's
+/// PARAMETER curve. They are separate because they are performed separately —
+/// hold a shift alone and turn Main to draw the curve, then tap effects in
+/// and out over the top of it. Recording them together would mean you could
+/// not change one without re-performing the other.
 enum KnobLane : uint8_t {
 	kLaneFilter = 0,   ///< Main knob -> DJ filter
 	kLaneTone   = 1,   ///< Y knob -> kit character
-	kLaneFxA    = 2,   ///< effects held under shift A (filters)
+
+	kLaneFxA    = 2,   ///< which effect is held under shift A (filters)
 	kLaneFxB    = 3,   ///< shift B (destruction)
 	kLaneFxC    = 4,   ///< shift C (TIME — see below)
 	kLaneFxD    = 5,   ///< shift D (dynamics)
-	kNumLanes   = 8    ///< a power of two, for LaneOf()'s mask
+
+	kLaneParA   = 6,   ///< shift A's parameter curve
+	kLaneParB   = 7,
+	kLaneParC   = 8,
+	kLaneParD   = 9,
+
+	kNumLanes   = 16   ///< a power of two, for LaneOf()'s mask
 };
 
-/// The first FX lane, so a shift index maps to a lane by addition.
-constexpr uint8_t kLaneFxFirst = kLaneFxA;
+/// The first lane of each family, so a shift index maps to a lane by addition.
+constexpr uint8_t kLaneFxFirst  = kLaneFxA;
+constexpr uint8_t kLaneParFirst = kLaneParA;
 
-/// Which lane a shift button writes to.
+/// Which effect-lane a shift button writes to.
 static inline uint8_t FxLaneForShift(int8_t shift)
 {
 	return static_cast<uint8_t>(kLaneFxFirst + shift);
+}
+
+/// Which parameter-lane a shift button writes to.
+static inline uint8_t ParLaneForShift(int8_t shift)
+{
+	return static_cast<uint8_t>(kLaneParFirst + shift);
 }
 
 /// Shift C carries the TIME family (stutter, half/double time, flam), and
@@ -79,21 +98,17 @@ static inline uint8_t FxLaneForShift(int8_t shift)
 /// timing effect sounds at a time, while the other three lanes chain freely.
 constexpr uint8_t kLaneTiming = kLaneFxC;
 
-/// How an FX lane event packs into LoopEvent::value.
+/// An FX lane event carries only WHICH effect, since the depth now lives in
+/// its own parameter lane. Zero means NO EFFECT, which is why Fx::None must
+/// stay index 0.
 ///
-/// Four bits of effect index (twelve effects fit in sixteen) and four bits of
-/// depth. Depth loses resolution — 4095 becomes 16 steps — and that is an
-/// accepted trade: the alternative is a second event per sample, doubling the
-/// automation cost of the densest thing on the card for a precision nobody
-/// can hear on a bit-crusher.
-///
-/// Zero means NO EFFECT, which is why Fx::None must stay index 0.
-static inline uint8_t PackFx(uint8_t fx, int32_t depth)
-{
-	return static_cast<uint8_t>((fx << 4) | ((depth >> 8) & 0x0F));
-}
-static inline uint8_t FxOf(uint8_t v)      { return static_cast<uint8_t>(v >> 4); }
-static inline int32_t FxDepthOf(uint8_t v) { return (v & 0x0F) << 8; }
+/// Depth used to be packed into the same byte, four bits each, which cost it
+/// most of its resolution — a sweep replayed as a sixteen-step staircase.
+/// Splitting the two lanes gives the parameter a full byte and, more
+/// importantly, lets them be performed independently: draw a curve once, then
+/// pop effects in and out over it without re-recording the curve.
+static inline uint8_t PackFx(uint8_t fx)   { return fx; }
+static inline uint8_t FxOf(uint8_t v)      { return v; }
 
 /// Marks an automation event as belonging to the CURRENT recording pass.
 ///
@@ -258,9 +273,17 @@ public:
 	/// `fxPacked` is indexed by SHIFT (0..3 for A..D), so only the lane whose
 	/// shift is currently held is written. The others keep whatever earlier
 	/// passes put there — which is the whole point of having four.
+	///
+	/// `parShift` names the lane whose PARAMETER curve is being drawn, or -1
+	/// for none. That is a separate gesture from holding an effect: shift
+	/// alone plus a turn of Main writes the curve, and any effect on that lane
+	/// reads its depth from it. Unlike the effect lanes this only writes while
+	/// the knob is actually MOVING, exactly like the filter and tone lanes —
+	/// a still knob must not flatten a curve recorded on an earlier pass.
 	void RecordKnobs(bool filterMoving, int32_t filterKnob,
 	                 bool toneMoving,   int32_t toneKnob,
-	                 const uint8_t *fxPacked);
+	                 const uint8_t *fxPacked,
+	                 int8_t parShift, int32_t parKnob, bool parMoving);
 
 	/// Called when record is armed or released. Drops the knob reference so the
 	/// next RecordKnob() re-seeds instead of comparing against a stale value

@@ -844,6 +844,20 @@ private:
 	// for something else. Also note the mode-reminder LED pulses the mode's
 	// single shift button, which stops meaning anything with four of them.
 
+	/// One slot's parameter value: the hand's if that slot's shift is held,
+	/// otherwise whatever the loop is replaying for it.
+	///
+	/// The single place depth is resolved, so the audio chain and the timing
+	/// effects cannot disagree about it. They did: stutter read the raw Main
+	/// knob, so drawing a curve under one shift re-rated a timing effect
+	/// recorded under another.
+	int32_t __not_in_flash_func(FxSlotDepth)(int8_t slot)
+	{
+		if (slot < 0 || slot >= kNumFxSlots) return 2048;
+		return (slot == fxParShift_) ? KnobVal(Knob::Main)
+		                             : fxParPlayback_[slot];
+	}
+
 	/// Which effect is held right now. Control rate.
 	///
 	/// ANY single may be the shift, not just the mode's own button: four
@@ -984,8 +998,7 @@ private:
 		// curve the hand is drawing.
 		for (int8_t s = 0; s < kNumFxSlots; s++)
 		{
-			const int32_t depth = (s == fxParShift_) ? KnobVal(Knob::Main)
-			                                         : fxParPlayback_[s];
+			const int32_t depth = FxSlotDepth(s);
 
 			if (s == fxLiveSlot_)
 				fx_.SetSlot(s, fxCurrent_, depth);
@@ -1156,9 +1169,17 @@ private:
 		{
 			if (--stutterTicks_ <= 0)
 			{
-				// The Main knob sets the division: slow rolls to a machine-gun.
+				// The division comes from the TIMING SLOT's own parameter
+				// curve, not from the live knob.
+				//
+				// It used to read filterLane_.Value() — the raw Main knob,
+				// whichever shift was held — so drawing a distortion curve
+				// under shift B silently re-rated the stutter under shift C
+				// as well. The timing effects were bypassing the per-slot
+				// parameter system that the audio effects already used.
 				stutterTicks_ = kStutterMin
-				              + ((4095 - filterLane_.Value()) * kStutterRange >> 12);
+				              + ((4095 - FxSlotDepth(kFxTimingSlot))
+				                 * kStutterRange >> 12);
 				TriggerVoice(lastVoice_);
 				FlashVoice(lastVoice_);
 			}

@@ -109,6 +109,10 @@ The pads show three states: **full** is the pattern playing, **half** is a
 slot with something in it, **dark** is empty — so what you can jump to is
 readable at a glance.
 
+> **Patterns live in RAM only** — they do not survive a power cycle. Getting
+> them in and out over the web app is the next natural step, and a pattern is
+> a good candidate for it: a bare event list under 2KB, carrying no audio.
+
 > A hold-to-store gesture would not work on this hardware. Four Voltages
 > *latches*: a held button is a level that sits there indefinitely, so any
 > "held for a second" test passes eventually and every recall would become a

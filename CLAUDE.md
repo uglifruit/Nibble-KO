@@ -11,13 +11,16 @@ where every voice is independently synthesised or sample-based, chosen and
 uploaded from a browser WebUI — the sample-management pattern from
 `../WorkshopBio`.
 
-## Current status: BUILDS, UNTESTED ON HARDWARE
+## Current status: PLAYABLE, TESTED ON HARDWARE
 
-`main.cpp` exists and the card compiles to `build/nibbleko.uf2` (4.8% flash,
-9.4% RAM). The mode machine, the Drum Performance path and the calibration
-learn machine are written; the sample backend, the effects DSP and the WebUI
-are not. **Nothing here has touched a Workshop Computer yet** — see "What
-works, on paper" below, and treat every ergonomic claim as unverified.
+Builds to `build/nibbleko.uf2` — **6.6% flash, 14.2% RAM**. Confirmed working
+on a Workshop Computer: drums, the four-bar looper with lossless overdub,
+three mute groups, twelve performance effects with two-lane recording, three
+pattern slots, and sample playback from a baked bank.
+
+**Nothing is saved.** Calibration and patterns are RAM only, so both die at
+power-off, and the card recalibrates at every boot. That plus the browser app
+is the bulk of what is left — see "What's NOT here".
 
 ## Build
 
@@ -74,13 +77,14 @@ Ported and adapted from `../WoskshopButtons` (NIBBLE) and `../WorkshopBio`
 | `nibbleko.h` | Ported, trimmed | NIBBLE's `nibble.h`, minus `BootMode`/scale vocabulary (KEYS-only) |
 | `levels.h/.cpp` | Ported unchanged | NIBBLE's level detector + **the ghost rule** + `Shift()` |
 | `looper.h/.cpp` | Ported unchanged | NIBBLE's event looper |
-| `drums.h/.cpp` | Ported, synth backend only | NIBBLE's `drums.h/.cpp` — see its file header for what's TODO |
+| `drums.h/.cpp` | Ported + PCM backend | NIBBLE's synth engine, plus sample playback and the D-bank transport effects |
 | `fastmath.h/.cpp` | Ported unchanged (namespace only) | NIBBLE's fixed-point helpers |
-| `samples_default.h` | Written new | Adapted from WorkshopBio's mode×variant grid to 12 flat voice slots |
-| `samplestore.h` | Written new, **not wired in** | Adapted from WorkshopBio; `ResolveSample()` has no caller yet |
+| `samples_default.h` | Written new | The baked sample BANK plus `kVoiceSample`, the voice→bank mapping |
+| `samplestore.h` | Written new, wired in | `ResolveSample()` is called per hit from `DrumKit::TriggerVoice` |
 | `webui.h` | Written new, interface only | Adapted from WorkshopBio's message set to 12 flat slots + new `MSG_SET_SOURCE` |
 | `webui.cpp` | **Stub** — only `Encode7bit`/`Decode7bit` are real | Everything hardware-touching is a TODO |
-| `tools/importwav.py`, `tools/mksamples.py` | Written new | WorkshopBio's WAV pipeline, adapted from mode×variant to 12 named voice slots |
+| `tools/importbank.py`, `mksamples.py` | Written new | WAV → numbered bank entries; `importwav.py` supplies the DSP |
+| `fx.h/.cpp` | Written new | Twelve performance effects, four slots chained in series |
 | `tools/checksize.cmake`, `tools/bin2h.py` | Ported unchanged | WorkshopBio |
 | `tools/ghostsim.py`, `loopsim.py`, `dspsim.py`, `syntax.sh`, `checkyaml.py`, `kittable.py`, `crosscheck.py` | Ported unchanged | NIBBLE — all pass against the ported `.cpp` files (see Verifying changes) |
 | `ComputerCard.h`, `pico_sdk_import.cmake` | Vendored, byte-identical | NIBBLE — **do not edit** |
@@ -97,10 +101,10 @@ Briefly: hold the switch **Down** and press a button to choose a mode, which
 records it. Latching is what lets every mode be recorded through one
 mechanism, since Down and Up never need to be held at once.
 
-    switch+A  DRUMS (default)    switch+AB  WebUI setup
-    switch+B  MUTE               switch+AC  UNDO
-    switch+C  FX1 (audio)        switch+AD  QUANTISE
-    switch+D  FX2 (timing)       switch+CD  PLAY/STOP
+    switch+A  DRUMS (default)    switch+AB  UNDO
+    switch+B  MUTE               switch+AC  WebUI setup
+    switch+C  FX  (twelve)       switch+AD  QUANTISE
+    switch+D  PATTERN (three)    switch+CD  PLAY/STOP
 
 **Singles commit on RELEASE; pairs fire IMMEDIATELY.** That asymmetry is not
 an oversight and should not be "fixed" — both halves fall out of the ghost
@@ -112,58 +116,126 @@ releasing a pair falls back onto one of its members and `levels.cpp` sets
 `current_` to that **single** — so the resting state is never a pair, and a
 pair press is always a genuine transition. See `main.cpp`'s header.
 
+## Gotchas — the ones that have already bitten
+
+Every one of these was found on hardware, and most were invisible in the
+code. They are here because the same shapes will recur.
+
+### FOUR VOLTAGES LATCHES. Almost everything traces back to this.
+
+The output holds the last-pressed level indefinitely. There is no rest
+voltage, and a "held" button is indistinguishable from one pressed and
+released. Three separate bugs came from forgetting it:
+
+- **A hold-to-store gesture cannot work.** Any "held for N ticks" test passes
+  eventually, because the level just sits there. The pattern store was
+  written this way and every recall became a store. The switch decides the
+  verb instead.
+- **A press-driven mode select never fires** when the CV is already on the
+  button you want. Hence commit-on-release for singles.
+- **A bare-press toggle can turn something on and never off**, because
+  pressing the same button twice needs a transition that never happens.
+  Hence shift-and-tap for mutes.
+
+### Ordering inside ControlTick is load-bearing
+
+`FireCombo()` runs BEFORE `PlayControl()`, so anything `PlayControl()`
+assigns is one tick stale when a button handler reads it. That is harmless
+for values that only play, and destructive for values that decide whether to
+*write*: `PatternPress` read `recording_` this way and a stale-true reading
+silently overwrote a pattern slot. **Read `SwitchVal()` directly** in a
+button handler rather than the cached flag.
+
+### `Current()` versus `Sounding()` is not a style choice
+
+`Sounding()` reports the pair for as long as the ghost is armed — i.e. after
+the tapping finger has lifted. Right for a DRUM, whose hit is still ringing.
+Wrong for anything momentary: FX read `Sounding()` at first and effects
+stayed latched after release, and re-tapping the same button produced no
+change at all, so one whole bank appeared not to work.
+
+### Replacing the event array invalidates the cursor
+
+`cursor_` is an index into `events_`. Undo and pattern recall both replace
+that array wholesale, so it must be **rebuilt from the playhead**. Resetting
+it to zero looks safe and makes `Fire()` re-fire everything between the loop
+start and the current position, all on one tick.
+
+### The Python models are not decoration
+
+They have caught, before hardware: a stalling slew, a 0.33x soft clip, a
+looper sorting by the wrong key, a double-fire, and a lane-encoding drift
+where `loopsim` stored raw knob values while `looper.cpp` stored `knob >> 4`
+— invisible until the FX lane packed data into all eight bits. **If you
+change `levels.cpp`, `looper.cpp` or `drums.cpp`, change the model too**, or
+delete it rather than let it lie.
+
+### Units: loop ticks are not control ticks
+
+Eight loop ticks is 42ms at 240bpm and 250ms at 40bpm — 125 versus 750
+control ticks. Anything measured in one and counted in the other is wrong
+across most of the tempo range. The FX playback hold was written in control
+ticks first and expired instantly at slow tempos.
+
 ## What's NOT here — the actual next work
 
 Roughly in dependency order:
 
-1. **Calibration is not persisted**, and two things in this build are
-   temporary scaffolding around that gap — both marked `TODO(calibstore)`:
-   - **Every boot calibrates**, not just the alt-boot. The intended design is
-     alt-boot-only with normal boot restoring the saved levels; without the
-     flash side, a normal boot would come up on the evenly-spaced *default*
-     spread, which is not a real calibration and cannot be played.
-   - **Abort and timeout RESTART the learn** instead of exiting, because
+1. **Nothing is saved to flash.** Calibration and the three pattern slots are
+   both RAM only, so both die at power-off. Two pieces of temporary
+   scaffolding exist around the calibration half, marked `TODO(calibstore)`:
+   - **Every boot calibrates**, not just the alt-boot. Without saved levels a
+     normal boot would come up on the evenly-spaced *default* spread, which
+     is not a real calibration and cannot be played.
+   - **Abort and timeout RESTART the learn** rather than exiting, because
      exiting would land on that same unplayable default. Once levels can be
      restored, aborting should go back to meaning "keep what I had".
 
    Needs a small `calibstore.h` (sibling to `samplestore.h`, own 4KB sector)
-   and the five-step flash protocol from `docs/LESSONS.md`. This is the
-   highest-value next task — it is what turns the card from "recalibrate
-   every time you power it on" into the design that was actually agreed.
-2. **Undo/Quantise do nothing.** The gestures are wired and dispatch to
-   `FireAction()`; `Looper` still needs `Snapshot()`, `Undo()` and
-   `QuantiseNow()`, plus a runtime-settable quantise grid.
-3. **Mute groups are hardcoded.** `MuteGroupOf()` splits the kit three ways
-   by voice index so the mode is testable; the real mapping is assigned per
-   voice from the WebUI.
-4. **The effects do nothing but light an LED.** `FxPress()` records which
-   slot is held and stops there. Bank 2 (timing: flam/stutter/triplet) acts
-   on the loop's firing and can be built now; bank 1 (audio: reverse/
-   tape-stop/pitch) needs the sample backend first.
-5. **No sample playback.** `drums.h`'s `DrumVoice` has no PCM state — see
-   that file's header for what is undecided (position/fraction fields, what
-   Y does to a sample voice, per-voice backend dispatch).
-6. **No WebUI.** `webui.h` is an interface shape, `webui.cpp` a stub (only
+   and the five-step flash protocol from `docs/LESSONS.md`. **Highest-value
+   next task** — it is what turns the card from "recalibrate every time you
+   power it on" into the design that was agreed.
+
+2. **No WebUI.** `webui.h` is an interface shape, `webui.cpp` a stub (only
    the 7-bit codec is real), and it is **not in the build**. No `web/`
-   client — there is no protocol for it to speak yet.
-7. **No hardware testing.** The card builds and its logic passes the Python
-   models, which is a much weaker claim than "works on the bench". The
-   commit-on-release gesture in particular is an ergonomic bet that only
-   fingers can settle.
+   client. Three things want it, in rough order of value:
+   - **pattern transfer** — a pattern is a bare event list under 2KB and
+     carries no audio, so this is close to a straight dump over SysEx
+   - **user samples into flash**, addressed by bank index like the baked ones
+   - **voice/sample assignment, mute-group assignment, loop setup** (bars,
+     swing, quantise grid) — all currently compile-time tables
+
+3. **Quantise does nothing.** The gesture (switch+AD) is wired and dispatches
+   to `FireAction()`; `Looper` needs a `QuantiseNow()` and a runtime-settable
+   grid. Undo, by contrast, is done.
+
+4. **Mute groups are hardcoded.** `MuteGroupOf()` splits the kit three ways
+   by voice index so the mode is testable; the real mapping belongs in the
+   WebUI alongside sample assignment.
+
+5. **`kVoiceSample` is compile-time.** Five voices are sampled and seven
+   synthesised, fixed at build. The indirection is already right for a
+   runtime table — it is indices, not audio — so this is a load rather than
+   a redesign.
 
 ## Known gaps in what IS written
 
 Things that compile and look finished but are not, worth knowing before
 trusting them:
 
+- **Reverse on a synth voice is hard to judge.** The swell runs over roughly
+  the length the decay would have taken, derived from each voice's decay
+  shift — one expression in `SetReverse()`. Whether that ratio is musical
+  across the kit is unsettled.
 - **`kSelectMinTicks` (50ms) is a guess.** It is the debounce that stops a
-  knock against the switch re-latching the mode. Untested by hand.
-- **The mode-flash patterns** (`ModeFlashLeds()`) are distinguishable on
-  paper. Whether four patterns on six single-colour LEDs are actually
-  *tellable apart* mid-performance is exactly the kind of thing NIBBLE's
-  LESSONS.md warns can only be answered on the bench.
+  knock against the switch re-latching the mode.
+- **Gate is not tempo-synced.** Its rate divides the sample clock, so it does
+  not lock to the loop. Deliberate — a gate that slowed with the pattern is
+  just tremolo — but worth revisiting.
 - **CV Out 1 and 2 output nothing.** Deliberate — NIBBLE's bassline is gone
   and no replacement has been chosen.
+- **An intermittent fault is recorded in `docs/OPEN-BUGS.md`**, seen once and
+  never reproduced.
 
 ## Why the namespace is `nko`, not `nib`
 

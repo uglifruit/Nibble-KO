@@ -394,12 +394,19 @@ void Looper::Snapshot()
 // Pattern slots
 // ---------------------------------------------------------------------------
 
-void Looper::StorePattern(int i)
+bool Looper::StorePattern(int i)
 {
-	if (i < 0 || i >= kNumPatterns) return;
+	if (i < 0 || i >= kNumPatterns) return false;
+
+	// Never overwrite with silence. A store is irreversible — Undo covers the
+	// live loop, not the slots — so the one case worth refusing outright is
+	// the one that destroys a pattern and leaves nothing in its place.
+	if (count_ == 0) return false;
+
 	for (uint16_t k = 0; k < count_; k++) pattern_[i][k] = events_[k];
 	patternCount_[i]     = count_;
 	patternKnobCount_[i] = knobCount_;
+	return true;
 }
 
 bool Looper::RecallPattern(int i)

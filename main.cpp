@@ -1053,13 +1053,29 @@ private:
 		const int8_t slot = SlotForShiftedTap(combo, kD);
 		if (slot < 0) return;
 
-		if (recording_)
+		// SwitchVal(), not recording_.
+		//
+		// recording_ is updated in PlayControl(), which runs AFTER FireCombo()
+		// on the same tick — so this would read the PREVIOUS tick's value.
+		// Harmless for anything that merely plays, and destructive here: a
+		// stale-true reading turns a RECALL into a STORE, silently
+		// overwriting the slot you meant to recall with whatever is playing.
+		// If that happened to be a short or empty loop, recalling the slot
+		// afterwards sounded like the pattern had been muted.
+		//
+		// Reading the switch directly removes the ordering dependency
+		// altogether rather than moving the assignment and hoping.
+		if (SwitchVal() == Switch::Up)
 		{
 			// Switch Up: commit. What you stored is what is now playing.
-			loop_.StorePattern(slot);
-			patLive_       = slot;
-			patLastStored_ = slot;
-			patStoreFlash_ = kPatternFlashTicks;
+			// An empty loop is refused rather than wiping the slot, and the
+			// confirmation flash only fires if something was actually saved.
+			if (loop_.StorePattern(slot))
+			{
+				patLive_       = slot;
+				patLastStored_ = slot;
+				patStoreFlash_ = kPatternFlashTicks;
+			}
 		}
 		else
 		{

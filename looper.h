@@ -377,7 +377,12 @@ public:
 	// or not you meant it. Undo still covers one step back.
 
 	/// Copy the live loop into slot `i`.
-	void StorePattern(int i);
+	///
+	/// Refuses to store an EMPTY loop. Overwriting a good pattern with silence
+	/// is never what the gesture meant, and it is unrecoverable — Undo covers
+	/// the live loop, not the slots. Returns false so the caller can say so
+	/// rather than flashing a confirmation for something that did not happen.
+	bool StorePattern(int i);
 
 	/// Load slot `i` over the live loop. The PLAYHEAD IS NOT MOVED — the new
 	/// pattern picks up from wherever in the bar you already are, so

@@ -268,7 +268,12 @@ class Looper:
     def store_pattern(self, i):
         if not hasattr(self, "patterns"):
             self.patterns = {}
+        # Never overwrite a slot with silence -- irreversible, and never what
+        # the gesture meant. Mirrors the C++ guard.
+        if not self.events:
+            return False
         self.patterns[i] = ([list(e) for e in self.events], self.knob_count)
+        return True
 
     def recall_pattern(self, i):
         pats = getattr(self, "patterns", {})
@@ -853,6 +858,30 @@ def test_pattern_recall_keeps_the_playhead():
     check("pattern: only events ahead of the playhead fire", fired, [2])
 
 
+def test_store_refuses_an_empty_loop():
+    """Storing silence over a good pattern destroys it unrecoverably -- Undo
+    covers the live loop, not the slots.
+
+    This is the tail of a real bug: PatternPress read `recording_`, which is
+    updated later in the same tick, so a stale-true reading turned a RECALL
+    into a STORE. When the live loop happened to be empty that wiped the slot,
+    and recalling it afterwards sounded exactly like the pattern had been
+    muted. The read is fixed at the source; this guard makes the destructive
+    half impossible regardless.
+    """
+    lp = Looper(); lp.set_tempo_bpm(120)
+    lp.play_head = 0;   lp.record_hit(1)
+    lp.play_head = 384; lp.record_hit(2)
+    check("store: a real pattern stores", lp.store_pattern(0), True)
+
+    lp.clear()
+    check("store: an empty loop is refused", lp.store_pattern(0), False)
+
+    # And the slot still holds the good pattern.
+    check("store: the slot survived", lp.recall_pattern(0), True)
+    check("store: ...with its hits intact", len(lp.events), 2)
+
+
 def test_pattern_slots_are_three_not_four():
     """THREE slots, because the gesture is hold-D-and-tap: the shift button is
     not itself a slot, same as the three mute groups.
@@ -1061,6 +1090,7 @@ def main():
     test_undo_does_not_replay_the_bar_so_far()
     test_patterns_store_voices_not_sounds()
     test_pattern_recall_keeps_the_playhead()
+    test_store_refuses_an_empty_loop()
     test_pattern_slots_are_three_not_four()
     test_pattern_recall_of_empty_slot_is_a_noop()
     test_pattern_store_is_a_snapshot()

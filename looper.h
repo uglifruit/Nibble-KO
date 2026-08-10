@@ -207,6 +207,31 @@ public:
 
 	void Clear();
 
+	/// Copy the whole pattern aside, so Undo() can put it back.
+	///
+	/// Called before anything DESTRUCTIVE: arming record, and (once it exists)
+	/// quantising. Depth is ONE — this is "undo the last thing", not a history
+	/// stack. A second buffer is already 2KB, which is the card's largest
+	/// single allocation doubled; a stack of them is not affordable and was
+	/// never asked for.
+	///
+	/// Snapshotting on ARM rather than on the first recorded event is
+	/// deliberate: it means an overdub pass that you decide against can be
+	/// undone even if you played nothing at all during it, and it gives one
+	/// obvious moment to reason about rather than a lazily-taken one.
+	void Snapshot();
+
+	/// Put the snapshot back, if there is one. Returns false if there was
+	/// nothing to undo.
+	///
+	/// One-way: the snapshot is consumed, so a second Undo does nothing rather
+	/// than toggling back and forth. Redo was not asked for and a toggle that
+	/// looks like undo-twice is worse than a no-op.
+	bool Undo();
+
+	/// True when there is a snapshot to go back to.
+	bool CanUndo() const { return haveSnapshot_; }
+
 	uint16_t Position() const   { return playHead_; }
 	uint16_t EventCount() const { return count_; }
 	bool     Full() const       { return count_ >= kMaxEvents; }
@@ -245,6 +270,14 @@ private:
 	uint16_t  knobCount_ = 0;     ///< how many of count_ are automation
 	uint16_t  playHead_ = 0;
 	uint16_t  cursor_   = 0;    ///< index of the next event at or after playHead_
+
+	// --- undo, depth 1 ----------------------------------------------------
+	// 2KB, the same size as events_ itself. Worth it for one level; a stack
+	// would not be. See Snapshot().
+	LoopEvent snapshot_[kMaxEvents] = {};
+	uint16_t  snapshotCount_    = 0;
+	uint16_t  snapshotKnobCount_ = 0;
+	bool      haveSnapshot_     = false;
 
 	int32_t  phase_   = 0;      ///< Q16 fraction of a tick
 	int32_t  tickInc_ = 0;      ///< Q16 ticks per control step

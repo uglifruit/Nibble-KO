@@ -342,10 +342,56 @@ int Looper::Fire(int8_t *outCombo, uint8_t *outVel,
 void Looper::Clear()
 {
 	count_      = 0;
+	knobCount_  = 0;
 	cursor_     = 0;
 	for (int i = 0; i < kNumLanes; i++) lastKnob_[i] = -9999;
 	// playHead_ and phase_ are left alone: clearing the pattern should not also
 	// jump the transport, or an erase mid-performance lurches the timing.
+}
+
+// ---------------------------------------------------------------------------
+// Undo
+// ---------------------------------------------------------------------------
+
+void Looper::Snapshot()
+{
+	// A plain copy of the live array. No allocation, no memcpy call — this
+	// runs from the control tick inside the audio interrupt, and 512 four-byte
+	// copies is a few hundred cycles, well inside one 20.83us slot even at the
+	// worst case where the loop is full.
+	for (uint16_t i = 0; i < count_; i++) snapshot_[i] = events_[i];
+	snapshotCount_     = count_;
+	snapshotKnobCount_ = knobCount_;
+	haveSnapshot_      = true;
+}
+
+bool Looper::Undo()
+{
+	if (!haveSnapshot_) return false;
+
+	for (uint16_t i = 0; i < snapshotCount_; i++) events_[i] = snapshot_[i];
+	count_     = snapshotCount_;
+	knobCount_ = snapshotKnobCount_;
+
+	// The cursor is an index into an array that has just been replaced, so
+	// whatever it pointed at is meaningless now. Rebuild it from the playhead
+	// rather than resetting it to zero: zero would replay everything from the
+	// start of the loop on the way to the current position, firing a burst of
+	// hits that are not due yet.
+	//
+	// The array is sorted by FireTick, so the first event at or after the
+	// playhead is exactly where the walk in Fire() should resume.
+	cursor_ = 0;
+	while (cursor_ < count_ && FireTick(events_[cursor_]) < playHead_) cursor_++;
+
+	// The knob lanes were tracking values from the undone pass. Drop the
+	// references so the next RecordKnobs() re-seeds instead of comparing
+	// against a reading that no longer belongs to anything.
+	for (int i = 0; i < kNumLanes; i++) lastKnob_[i] = -9999;
+
+	// One-way: consumed, so a second Undo is a no-op rather than a redo.
+	haveSnapshot_ = false;
+	return true;
 }
 
 } // namespace nko

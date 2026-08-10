@@ -159,9 +159,14 @@ enum class Action : uint8_t {
 
 /// Which action each PAIR fires, indexed by (combo - kNumSingles) so it lines
 /// up with kPairMembers.
+/// UNDO takes AB, the easiest pair to hit, because it is the one action you
+/// reach for mid-performance and under pressure -- you have just recorded
+/// something wrong and want it gone before the loop comes round again.
+/// Entering the WebUI is a setup activity done once with both hands free, so
+/// it can afford the more awkward gesture.
 constexpr Action kActionForPair[kNumPairs] = {
-	Action::EnterWebUi,   // AB
-	Action::Undo,         // AC
+	Action::Undo,         // AB
+	Action::EnterWebUi,   // AC
 	Action::Quantise,     // AD
 	Action::None,         // BC  (reserved)
 	Action::None,         // BD  (reserved)

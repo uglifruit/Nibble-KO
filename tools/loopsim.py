@@ -216,6 +216,32 @@ class Looper:
     def clear(self):
         self.events = []
         self.cursor = 0
+        self.knob_count = 0
+
+    # --- undo, depth 1 ----------------------------------------------------
+
+    def snapshot(self):
+        """Copy the pattern aside. Called on ARMING record, not on leaving."""
+        self.snap = [list(e) for e in self.events]
+        self.snap_knob_count = self.knob_count
+        self.have_snap = True
+
+    def undo(self):
+        """Restore the snapshot. Consumed, so a second undo is a no-op."""
+        if not getattr(self, "have_snap", False):
+            return False
+        self.events = [list(e) for e in self.snap]
+        self.knob_count = self.snap_knob_count
+
+        # Rebuild the cursor from the playhead. Resetting it to zero would
+        # replay everything between the loop start and here.
+        self.cursor = 0
+        while (self.cursor < len(self.events)
+               and fire_tick(self.events[self.cursor]) < self.play_head):
+            self.cursor += 1
+
+        self.have_snap = False
+        return True
 
 
 def run_pass(lp, collect=None):
@@ -615,6 +641,90 @@ def test_clear_empties():
           [c for (_t, c) in run_pass(lp)], [])
 
 
+def test_undo_restores_the_previous_pass():
+    """The core promise: undo puts back exactly what was there before record
+    was armed, and drops only what the armed pass added."""
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+
+    # A first pass, kept.
+    lp.play_head = 0;   lp.record_hit(0)
+    lp.play_head = 384; lp.record_hit(1)
+    before = [list(e) for e in lp.events]
+
+    # Arm record: snapshot. Then overdub two more hits.
+    lp.snapshot()
+    lp.play_head = 192; lp.record_hit(2)
+    lp.play_head = 576; lp.record_hit(3)
+    check("undo: overdub added its hits", len(lp.events), 4)
+
+    check("undo: reported success", lp.undo(), True)
+    check("undo: pattern is exactly the pre-record one", lp.events, before)
+
+
+def test_undo_is_one_way():
+    """A second undo must do nothing, not toggle the overdub back. A redo that
+    looks like undo-twice is worse than a no-op."""
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+    lp.play_head = 0; lp.record_hit(0)
+    lp.snapshot()
+    lp.play_head = 192; lp.record_hit(5)
+    lp.undo()
+    after_first = [list(e) for e in lp.events]
+
+    check("undo: a second undo reports nothing to do", lp.undo(), False)
+    check("undo: ...and changes nothing", lp.events, after_first)
+
+
+def test_undo_with_no_snapshot():
+    """Undo before ever recording must be a safe no-op, not a crash or a
+    silent wipe."""
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+    lp.play_head = 0; lp.record_hit(4)
+    check("undo: no snapshot reports failure", lp.undo(), False)
+    check("undo: ...and leaves the pattern alone", len(lp.events), 1)
+
+
+def test_undo_does_not_replay_the_bar_so_far():
+    """THE subtle one. Undo replaces the event array, so the cursor -- an index
+    into the old array -- is meaningless afterwards.
+
+    Resetting it to zero looks like the safe thing and is not: the walk in
+    fire() would then re-fire every event between the start of the loop and
+    the current playhead, all on the tick the undo landed on. Undoing halfway
+    through a bar would spray the first half of the pattern out at once.
+
+    Rebuilding it from the playhead is what avoids that.
+    """
+    lp = Looper()
+    lp.set_tempo_bpm(120)
+
+    # Four hits spread across the loop, all in the snapshot.
+    for t, v in ((0, 0), (192, 1), (384, 2), (576, 3)):
+        lp.play_head = t
+        lp.record_hit(v)
+    lp.snapshot()
+    lp.play_head = 96; lp.record_hit(9)     # the pass we will undo
+
+    # Undo from the middle of the bar, past the first two hits.
+    lp.play_head = 400
+    lp.undo()
+
+    # Nothing may fire on the undo tick itself.
+    check("undo: nothing fires on the tick undo lands", lp.fire(), [])
+
+    # Only the hits still AHEAD of the playhead should fire this pass.
+    fired = []
+    while lp.play_head < LOOP_TICKS - 1:
+        lp.play_head += 1
+        for ev in lp.fire():
+            fired.append((lp.play_head, ev[0]))
+    check("undo: only events ahead of the playhead fire",
+          [c for (_t, c) in fired], [3])
+
+
 def main():
     print("NIBBLE looper model")
     print()
@@ -634,6 +744,10 @@ def main():
     test_clock_locks_across_range()
     test_events_stay_sorted()
     test_clear_empties()
+    test_undo_restores_the_previous_pass()
+    test_undo_is_one_way()
+    test_undo_with_no_snapshot()
+    test_undo_does_not_replay_the_bar_so_far()
     print()
     if FAILURES:
         print("%d FAILED: %s" % (len(FAILURES), ", ".join(FAILURES)))

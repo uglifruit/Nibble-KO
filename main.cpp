@@ -159,6 +159,14 @@ constexpr int32_t kGateSamples = kSampleRate / 200;
 /// a note, and at 240bpm the beats are only a quarter of a second apart.
 constexpr int32_t kClickSamples = kSampleRate / 500;   // 2ms
 
+/// How long an UNDO is announced on the status LEDs.
+///
+/// Undo is invisible otherwise: the pattern simply reverts, and if you undid
+/// a pass that added little you may not hear the difference for a whole loop.
+/// Without an acknowledgement there is no way to tell "it worked" from "the
+/// gesture missed", which are the two things you actually need to separate.
+constexpr int32_t kUndoFlashTicks = (kCtrlRate * 2) / 5;   // 400ms
+
 /// How long a mode-select gesture must have the switch down before the release
 /// counts as a deliberate selection.
 ///
@@ -491,7 +499,11 @@ private:
 			break;
 
 		case Action::Undo:
-			// TODO(step 3): loop_.Undo() once the snapshot exists.
+			// Puts back whatever the pattern was before the last time record
+			// was armed. Fails silently if there is nothing to go back to,
+			// which is the honest response — there is no state to show for
+			// "you have already undone that".
+			undoFlash_ = loop_.Undo() ? kUndoFlashTicks : 0;
 			break;
 
 		case Action::Quantise:
@@ -745,8 +757,11 @@ private:
 		if (nowRecording != recording_)
 		{
 			loop_.ArmKnobs();
-			// TODO(step 3): loop_.Snapshot() on the way IN, so Undo has
-			// something to revert to.
+
+			// Take the undo snapshot on the way IN, so what Undo restores is
+			// the pattern as it stood before this pass touched it. On the way
+			// out would snapshot the result instead, which undoes nothing.
+			if (nowRecording) loop_.Snapshot();
 		}
 		recording_ = nowRecording;
 
@@ -1032,6 +1047,7 @@ private:
 			if (ledFlash_[i] > 0) ledFlash_[i]--;
 		for (int i = 0; i < kNumMuteGroups; i++)
 			if (groupFlash_[i] > 0) groupFlash_[i]--;
+		if (undoFlash_ > 0) undoFlash_--;
 
 		uiTicks_++;
 
@@ -1068,17 +1084,19 @@ private:
 
 	/// The mode reminder, shown on the shift button of the current mode.
 	///
-	/// A slow quarter-brightness pulse. It has to be unmistakably NOT a hit —
-	/// the other three pads in these modes are flashing at full or half — so
-	/// it is both dim and slow, which no hit ever is.
+	/// STEADY at half brightness, not a pulse. Steady is what makes it
+	/// readable at a glance — you see which pad is lit and you know the mode,
+	/// without waiting for a blink phase to come round.
 	///
-	/// This is what replaced the mode-change animation. A continuous reminder
-	/// beats a transient one: it answers "which mode am I in" at any moment
-	/// rather than only in the second after you changed it.
-	uint16_t __not_in_flash_func(ModeReminder)() const
-	{
-		return ((uiTicks_ >> kBlinkSlow) & 1) ? kLedQuarter : 0;
-	}
+	/// It shares kLedHalf with "this mute group is muted", which sounds like a
+	/// collision and is not: the shift button is never itself a group, and a
+	/// group's half-bright flash is BRIEF where this is continuous. Steady
+	/// versus flashing separates them more clearly than brightness would.
+	///
+	/// This replaced the mode-change animation. A continuous reminder beats a
+	/// transient one: it answers "which mode am I in" at any moment rather
+	/// than only in the second after you changed it.
+	static uint16_t ModeReminder() { return kLedHalf; }
 
 	/// The steady per-mode display.
 	void __not_in_flash_func(ModeLeds)()
@@ -1147,6 +1165,18 @@ private:
 			}
 			break;
 		}
+		}
+
+		// An UNDO takes both status LEDs briefly, blinking fast. It borrows
+		// them rather than owning a pad because it is an event, not a state —
+		// and because the pads are showing the pattern, which is exactly what
+		// you are looking at to see whether the undo did what you wanted.
+		if (undoFlash_ > 0)
+		{
+			bool on = ((undoFlash_ >> kBlinkFast) & 1) != 0;
+			LedBrightness(4, on ? kLedFull : 0);
+			LedBrightness(5, on ? kLedFull : 0);
+			return;
 		}
 
 		// LED 5 is the CLICK, LED 4 is RECORD — in every mode, so the two
@@ -1316,6 +1346,8 @@ private:
 	/// Set for every hit whether or not the group is audible — see
 	/// TriggerVoice().
 	int32_t groupFlash_[kNumMuteGroups] = {};
+	/// Counts down while an UNDO is being acknowledged on the status LEDs.
+	int32_t undoFlash_ = 0;
 };
 
 // ===========================================================================

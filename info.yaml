@@ -37,18 +37,25 @@ summary: |
   as a bank select, tap another to play it repeatedly - twelve ordered
   gestures from four buttons and six pairs.<br><br>
 
-  THIS CARD IS NOT YET PLAYABLE. It is a scaffold: the level detector, event
-  looper, and synth voice engine are ported from NIBBLE and pass their
-  verification models, but there is no main.cpp, no sample playback, and no
-  working WebUI yet. See the repository's CLAUDE.md and docs/LESSONS.md for
-  what exists and what is still designed.
+  CALIBRATION IS THE WHOLE GAME. Use output 1 of Four Voltages with its knob
+  near twelve o'clock, and give the card ten well-separated voltages. Levels
+  that sit close together do not fail cleanly - a pad plays the wrong drum,
+  fires twice or does nothing, differently each time. The card blinks LEDs 4
+  and 5 when two captures are too close; move the knob and run it again
+  rather than playing around it.<br><br>
+
+  IN DEVELOPMENT. Drums, the four-bar looper, mute groups, twelve performance
+  effects and sample playback all work on hardware. Calibration is not yet
+  saved to flash, so the card recalibrates at every power-up, and the browser
+  sample manager is not written. See the repository's CLAUDE.md for what
+  exists and what is still designed.
 
 panel:
   inputs:
     - id: CVIn1
       name: Four Voltages
       type: cv
-      description: Patch one output of the Four Voltages module here. The card learns which voltage each button combination produces, so it works at any position of the Four Voltages knob - re-learn whenever you move it. If two combinations cannot be told apart the card says so during calibration rather than guessing.
+      description: "Patch one output of the Four Voltages module here - output 1 with its knob near twelve o'clock is the reliable setting. The card learns which voltage each button combination produces, so it works at any knob position; re-learn whenever you move it. WELL-SEPARATED VOLTAGES MATTER MORE THAN ANYTHING ELSE: the knob moves all four outputs at once, and towards either extreme several combinations collapse onto nearly the same voltage. Two levels sitting close together do not fail cleanly - a pad plays the wrong drum, fires twice or does nothing, differently each time, because a few millivolts of drift moves the reading across the boundary. The card flags it (LEDs 4 and 5 blink during calibration) rather than guessing, and the fix is to move the Four Voltages knob and calibrate again."
     - id: CVIn2
       name: Unused
       type: cv

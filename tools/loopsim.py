@@ -858,6 +858,37 @@ def test_pattern_recall_keeps_the_playhead():
     check("pattern: only events ahead of the playhead fire", fired, [2])
 
 
+def test_undo_does_not_reach_the_pattern_slots():
+    """Undo is about RECORDING, and only recording.
+
+    It covers what a pass with the switch Up put into the live loop -- hits,
+    mutes, effects, knob curves. It deliberately does NOT cover storing a
+    pattern, which is a separate deliberate act on separate state. A gesture
+    that sometimes meant "undo my playing" and sometimes "un-store that slot"
+    would be two features sharing one name.
+
+    So StorePattern must not snapshot, and Undo must leave the slots alone.
+    """
+    lp = Looper(); lp.set_tempo_bpm(120)
+
+    # A pattern in slot 0, and a snapshot taken by arming record.
+    lp.play_head = 0; lp.record_hit(1)
+    lp.store_pattern(0)
+    lp.snapshot()
+
+    # Overdub, then store that over the slot.
+    lp.play_head = 384; lp.record_hit(2)
+    lp.store_pattern(0)
+    stored_after = [list(e) for e in lp.patterns[0][0]]
+    check("undo/slots: the store took", len(stored_after), 2)
+
+    # Undo reverts the LIVE loop only.
+    check("undo/slots: undo succeeded", lp.undo(), True)
+    check("undo/slots: live loop reverted", len(lp.events), 1)
+    check("undo/slots: the slot was NOT reverted",
+          lp.patterns[0][0], stored_after)
+
+
 def test_store_refuses_an_empty_loop():
     """Storing silence over a good pattern destroys it unrecoverably -- Undo
     covers the live loop, not the slots.
@@ -1090,6 +1121,7 @@ def main():
     test_undo_does_not_replay_the_bar_so_far()
     test_patterns_store_voices_not_sounds()
     test_pattern_recall_keeps_the_playhead()
+    test_undo_does_not_reach_the_pattern_slots()
     test_store_refuses_an_empty_loop()
     test_pattern_slots_are_three_not_four()
     test_pattern_recall_of_empty_slot_is_a_noop()

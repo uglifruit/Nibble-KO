@@ -341,11 +341,23 @@ public:
 
 	/// Copy the whole pattern aside, so Undo() can put it back.
 	///
-	/// Called before anything DESTRUCTIVE: arming record, and (once it exists)
-	/// quantising. Depth is ONE — this is "undo the last thing", not a history
-	/// stack. A second buffer is already 2KB, which is the card's largest
-	/// single allocation doubled; a stack of them is not affordable and was
-	/// never asked for.
+	/// UNDO IS ABOUT RECORDING, AND ONLY RECORDING. It covers what a pass of
+	/// the switch in the Up position put into the live loop — drum hits,
+	/// mute toggles, effects, knob curves — and nothing else. Specifically it
+	/// does NOT cover the pattern slots: storing one is a separate,
+	/// deliberate act on a separate piece of state, and a gesture that
+	/// sometimes meant "undo my playing" and sometimes "un-store that slot"
+	/// would be two features wearing one name.
+	///
+	/// StorePattern therefore does not snapshot, and must not start. What
+	/// protects a slot instead is that storing refuses an empty loop, so the
+	/// destructive case cannot happen by accident — see StorePattern.
+	///
+	/// Called before anything destructive to the LIVE LOOP: arming record,
+	/// and (once it exists) quantising. Depth is ONE — this is "undo the last
+	/// thing", not a history stack. A second buffer is already 2KB, the
+	/// card's largest single allocation doubled; a stack is not affordable
+	/// and was never asked for.
 	///
 	/// Snapshotting on ARM rather than on the first recorded event is
 	/// deliberate: it means an overdub pass that you decide against can be

@@ -60,7 +60,7 @@ And with a **pair** held, one-shot actions:
 
 | Hold switch, press | |
 |---|---|
-| **A + B** | **Undo** — revert the last recording pass |
+| **A + B** | **Undo** — revert the last recording pass (not pattern stores; see below) |
 | **A + C** | **WebUI** — hand the card over to USB *(not yet implemented)* |
 | **A + D** | **Quantise** *(not yet implemented)* |
 | **C + D** | **Play / Stop** |
@@ -103,7 +103,14 @@ loop* — so there is no new gesture to learn.
 Recall keeps the playhead where it is, so switching mid-bar reads as the band
 changing part rather than a stop and start. It **discards** whatever you were
 playing, which is what lets you try something over a pattern and abandon it.
-(Undo still gets you back one step.)
+
+**Undo does not reach the slots.** It is about *recording* — the hits,
+effects and knob curves a pass with the switch Up put into the live loop.
+Storing a pattern is a separate deliberate act on separate state, and a
+gesture that sometimes meant "undo my playing" and sometimes "un-store that
+slot" would be two features sharing one name. What protects a slot instead is
+that storing refuses an empty loop, so the destructive case cannot happen by
+accident.
 
 The pads show three states: **full** is the pattern playing, **half** is a
 slot with something in it, **dark** is empty — so what you can jump to is

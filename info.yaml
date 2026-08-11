@@ -125,13 +125,13 @@ controls:
   switch:
     up:
       name: Record
-      description: Play the current mode AND record it. Drum hits, mute toggles, effects and knob movements are all captured the same way. The loop stores events rather than audio, so overdubbing never degrades what is already there.
+      description: Play the current mode AND record it. Drum hits, effects and knob movements are captured the same way. Mute toggles are NOT yet recorded - they are live state only. The loop stores events rather than audio, so overdubbing never degrades what is already there.
     middle:
       name: Play
       description: Play the current mode without recording.
     down:
       name: Mode select
-      description: "Hold DOWN and press a button to choose a mode; the choice lands when you RELEASE, and then LATCHES, so Down and Up never need to be held at once. A: drums. B: mute groups. C: twelve performance effects. D: three pattern slots, hold D and tap A/B/C to recall - or do the same with the switch UP to store. With a PAIR held it fires a one-shot instead - A+B undo, C+D play/stop, A+C the browser setup, A+D quantise (the last two are not implemented yet). Commit-on-release exists because Four Voltages holds its last voltage: the CV may already be sitting on the button you want, so a press-driven select would never fire."
+      description: "Hold DOWN and press a button to choose a mode; the choice lands when you RELEASE, and then LATCHES, so Down and Up never need to be held at once. A: drums. B: mute groups. C: twelve performance effects. D: three pattern slots, hold D and tap A/B/C to recall - or do the same with the switch UP to store. With a PAIR held it fires a one-shot instead - A+B undo (which covers RECORDING - hits, effects and knob curves - and deliberately not the pattern slots), C+D play/stop, A+C the browser setup, A+D quantise (the last two are not implemented yet). Commit-on-release exists because Four Voltages holds its last voltage: the CV may already be sitting on the button you want, so a press-driven select would never fire."
     tap:
       name: Capture (during calibration)
       description: While calibrating, tap to capture the combination you are holding. Outside calibration a tap is just a short mode-select gesture and does nothing on its own.

@@ -19,7 +19,8 @@ import sys
 TICKS_PER_BEAT = 48
 BEATS_PER_LOOP = 16
 LOOP_TICKS = TICKS_PER_BEAT * BEATS_PER_LOOP      # 768
-QUANT_TICKS = TICKS_PER_BEAT // 4                 # 12
+# (the old fixed QUANT_TICKS is gone -- the grid is runtime now, see
+#  QUANT_DIVISORS below)
 NUM_VOICES = 12          # the looper stores VOICES, not key combos
 MAX_EVENTS = 512
 MAX_KNOB_EVENTS = 320
@@ -91,17 +92,24 @@ def check(name, got, want):
         FAILURES.append(name)
 
 
+# Quantise grid: divisors of TICKS_PER_BEAT. Mirrors QuantGrid in looper.h.
+QUANT_DIVISORS = [16, 12, 8]     # 16th, 12th (triplet), 8th
+
+
 def fire_tick(ev):
     """When an event actually sounds. Mirrors Looper::FireTick in looper.cpp.
 
-    The event array is sorted by THIS, not by the raw stored tick: quantisation
-    can move an event across the loop boundary, and an array sorted by raw tick
-    is then not sorted by the order things sound - which double-fires events.
+    Just the stored tick now: quantisation happens ONCE at record time (see
+    Looper.quantise_tick), so a hit recorded under 12ths keeps sounding on
+    the 12th grid even after later overdubs are recorded under 8ths. That is
+    what lets a straight part and a triplet part coexist in one loop.
+
+    The array is still sorted by THIS rather than read directly, because
+    rounding at capture can push a hit near the end of the loop across the
+    boundary - so a hit recorded late in the bar can sort before one recorded
+    early in it.
     """
-    if is_knob(ev[1]):
-        return ev[0]
-    q = ((ev[0] + QUANT_TICKS // 2) // QUANT_TICKS) * QUANT_TICKS
-    return q % LOOP_TICKS
+    return ev[0]
 
 
 class Looper:
@@ -115,6 +123,7 @@ class Looper:
         self.knob_count = 0
         self.since_clock = 0
         self.clock_timeout = 0
+        self.quant_grid = 0        # index into QUANT_DIVISORS; 0 = 16th
 
     def set_tempo_bpm(self, bpm):
         self.tick_inc = (bpm * TICKS_PER_BEAT * Q16) // (60 * CTRL_RATE)
@@ -238,7 +247,19 @@ class Looper:
                     self.remove(i)
                     break
         assert 0 <= voice < NUM_VOICES, "loop stores voices, not combos"
-        self.insert([self.play_head, voice, vel])
+        # Snapped HERE, against the grid live right now - not left raw for
+        # playback to re-round. Mirrors RecordHit/QuantiseTick.
+        self.insert([self.quantise_tick(self.play_head), voice, vel])
+
+    def quantise_tick(self, tick):
+        """Round to the CURRENT grid. Mirrors Looper::QuantiseTick."""
+        q = TICKS_PER_BEAT // QUANT_DIVISORS[self.quant_grid]
+        return ((tick + q // 2) // q * q) % LOOP_TICKS
+
+    def cycle_quant_grid(self):
+        """16th -> 12th -> 8th -> 16th. Affects only FUTURE hits."""
+        self.quant_grid = (self.quant_grid + 1) % len(QUANT_DIVISORS)
+        return self.quant_grid
 
     def fire(self):
         out = []
@@ -858,6 +879,65 @@ def test_pattern_recall_keeps_the_playhead():
     check("pattern: only events ahead of the playhead fire", fired, [2])
 
 
+def test_quantise_snaps_at_capture_not_playback():
+    """A hit is snapped to the grid ONCE, when recorded. Changing the grid
+    afterwards must not move it.
+
+    This is a deliberate reversal of the looper's original design, in which
+    quantisation was a non-destructive PLAYBACK filter. The reason is the
+    property asserted below: a live playback filter applies ONE divisor to
+    every event at once, so switching to 12ths for a triplet fill would drag
+    the straight part recorded under 16ths onto the triplet grid too. Snapping
+    at capture lets both live in one loop.
+    """
+    lp = Looper(); lp.set_tempo_bpm(120)
+
+    # A hit deliberately off the 16th grid (16th = every 3 ticks at TPB 48).
+    lp.play_head = 7
+    lp.record_hit(1)
+    at_16th = lp.events[0][0]
+    check("quant: snapped to the 16th grid at capture", at_16th % 3, 0)
+
+    # Now cycle to 12ths and confirm the ALREADY-RECORDED hit did not move.
+    lp.cycle_quant_grid()
+    check("quant: grid is now 12th", QUANT_DIVISORS[lp.quant_grid], 12)
+    check("quant: the existing hit did NOT move", lp.events[0][0], at_16th)
+
+
+def test_mixed_grids_coexist_in_one_loop():
+    """THE reason quantisation moved to capture time: a straight part and a
+    triplet part in the same loop, each on the grid it was played against."""
+    lp = Looper(); lp.set_tempo_bpm(120)
+
+    # Straight part under 16ths (grid divides TICKS_PER_BEAT into 3-tick steps).
+    lp.play_head = 25
+    lp.record_hit(1)
+    straight = lp.events[0][0]
+
+    # Triplet part under 12ths (4-tick steps).
+    lp.cycle_quant_grid()
+    lp.play_head = 100
+    lp.record_hit(2)
+    triplet = [e for e in lp.events if e[1] == 2][0][0]
+
+    check("mixed: straight hit sits on the 16th grid", straight % 3, 0)
+    check("mixed: triplet hit sits on the 12th grid", triplet % 4, 0)
+    # And the straight one is STILL on its own grid, untouched by the change.
+    check("mixed: straight hit still on the 16th grid", straight % 3, 0)
+
+
+def test_quant_grid_cycles_three_ways():
+    """16th -> 12th -> 8th -> back. Three steps, matching the LED count."""
+    lp = Looper()
+    check("cycle: starts at 16th", QUANT_DIVISORS[lp.quant_grid], 16)
+    lp.cycle_quant_grid()
+    check("cycle: then 12th", QUANT_DIVISORS[lp.quant_grid], 12)
+    lp.cycle_quant_grid()
+    check("cycle: then 8th", QUANT_DIVISORS[lp.quant_grid], 8)
+    lp.cycle_quant_grid()
+    check("cycle: wraps back to 16th", QUANT_DIVISORS[lp.quant_grid], 16)
+
+
 def test_mutes_are_not_loop_state():
     """Mutes are a MIXER move, not part of the music, so nothing about them
     lives in the loop.
@@ -1148,6 +1228,9 @@ def main():
     test_undo_does_not_replay_the_bar_so_far()
     test_patterns_store_voices_not_sounds()
     test_pattern_recall_keeps_the_playhead()
+    test_quantise_snaps_at_capture_not_playback()
+    test_mixed_grids_coexist_in_one_loop()
+    test_quant_grid_cycles_three_ways()
     test_mutes_are_not_loop_state()
     test_undo_does_not_reach_the_pattern_slots()
     test_store_refuses_an_empty_loop()

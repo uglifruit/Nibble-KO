@@ -62,7 +62,7 @@ And with a **pair** held, one-shot actions:
 |---|---|
 | **A + B** | **Undo** — revert the last recording pass (not pattern stores; see below) |
 | **A + C** | **WebUI** — hand the card over to USB *(not yet implemented)* |
-| **A + D** | **Quantise** *(not yet implemented)* |
+| **A + D** | **Quantise** — cycle the record grid: 16th → 12th → 8th |
 | **C + D** | **Play / Stop** |
 
 > **Why singles commit on release but pairs fire instantly.** Four Voltages
@@ -131,6 +131,23 @@ readable at a glance.
 > *latches*: a held button is a level that sits there indefinitely, so any
 > "held for a second" test passes eventually and every recall would become a
 > store.
+
+### Quantise
+
+**switch + A+D** cycles the grid new hits snap to: **16th → 12th (triplet) →
+8th**, and round again. The status LEDs blink a count so you know where you
+landed — one blink for 16ths, two for 12ths, three for 8ths.
+
+**It only affects hits recorded from that point on.** A hit is snapped once,
+at the moment you play it, and never moves again. That is what lets a
+straight part recorded under 16ths and a triplet fill recorded under 12ths
+live in the same loop, each on the grid it was played against — which a
+single live "playback grid" setting could not do, since one divisor would
+apply to every hit at once and switching to triplets would drag the straight
+part along with it.
+
+The trade is that a hit's original unquantised timing is gone the moment it
+is recorded, so a future "loosen the grid" control could not recover it.
 
 ### FX — twelve effects, four banks
 
@@ -265,7 +282,6 @@ map couldn't silently change an old loop.
   flash write is the next substantial piece of work.
 - **No browser sample manager.** The USB/SysEx layer is a stub, so samples are
   baked at build time rather than uploaded.
-- **Quantise does nothing** yet.
 - **Patterns are RAM only** — they do not survive a power cycle. Getting
   them in and out over the web app is the next natural step.
 - **Mute groups are hardcoded** three ways by voice index, pending the WebUI

@@ -205,9 +205,11 @@ Roughly in dependency order:
    - **voice/sample assignment, mute-group assignment, loop setup** (bars,
      swing, quantise grid) — all currently compile-time tables
 
-3. **Quantise does nothing.** The gesture (switch+AD) is wired and dispatches
-   to `FireAction()`; `Looper` needs a `QuantiseNow()` and a runtime-settable
-   grid. Undo, by contrast, is done.
+3. **Loop LENGTH is still fixed at four bars.** `kLoopTicks` is only ever
+   used in ordinary wrap arithmetic in `looper.cpp` — nothing is sized by it
+   — so making it runtime-settable (2 bars, 1 bar) is a small change, and a
+   natural WebUI setting. The quantise grid has already made this move; see
+   `QuantGrid` for the shape.
 
 4. **Mute groups are hardcoded.** `MuteGroupOf()` splits the kit three ways
    by voice index so the mode is testable; the real mapping belongs in the

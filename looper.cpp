@@ -10,22 +10,36 @@ namespace {
 
 } // namespace
 
-/// When an event actually sounds. Drum hits snap to the 1/16 grid; filter
-/// automation deliberately does NOT, because a quantised sweep is a staircase.
+/// When an event actually sounds.
 ///
-/// The RAW tick is what gets stored — quantising here rather than at capture
-/// keeps it non-destructive, so a later swing or humanise control still has the
-/// original timing to work from. The divide is by a compile-time constant, so
-/// the compiler strength-reduces it to a multiply and shift.
+/// For a drum hit this is now just ev.tick: quantisation happens ONCE, at
+/// RecordHit() time, against whatever grid was live then — see QuantGrid's
+/// comment for why. FireTick() no longer re-derives it, which is what makes
+/// that permanent: a hit recorded under 12ths keeps sounding on the 12th grid
+/// forever, including after later overdubs are recorded under 8ths, because
+/// nothing here ever looks at quantGrid_ for an event that already exists.
 ///
-/// Note the wrap: a hit in the last half-step of the loop quantises UP to
-/// kLoopTicks, which is tick 0 of the next pass, not a tick off the end.
-uint16_t Looper::FireTick(const LoopEvent &ev)
+/// Filter/tone automation was ALREADY exempt — a quantised sweep is a
+/// staircase — so this brings drum hits in line with how automation always
+/// behaved, rather than introducing a new exemption.
+///
+/// Note the wrap: QuantiseTick() (called from RecordHit) can round a tick in
+/// the last half-step of the loop UP to kLoopTicks, which must land on tick 0
+/// of the next pass rather than off the end — handled there, once, at the
+/// point of rounding.
+uint16_t Looper::FireTick(const LoopEvent &ev) const
 {
-	if (IsKnobEvent(ev.what)) return ev.tick;
-	uint16_t q = static_cast<uint16_t>(((ev.tick + kQuantTicks / 2) / kQuantTicks)
-	                                   * kQuantTicks);
-	return static_cast<uint16_t>(q % kLoopTicks);
+	return ev.tick;
+}
+
+/// Round `tick` to the CURRENT grid. The only caller is RecordHit() — this is
+/// capture-time snapping, not a playback filter — but it is worth its own
+/// function because the wrap needs the same care FireTick() used to take.
+uint16_t Looper::QuantiseTick(uint16_t tick) const
+{
+	const int q = kTicksPerBeat / kQuantDivisor[static_cast<int>(quantGrid_)];
+	uint16_t snapped = static_cast<uint16_t>(((tick + q / 2) / q) * q);
+	return static_cast<uint16_t>(snapped % kLoopTicks);
 }
 
 // ---------------------------------------------------------------------------
@@ -137,15 +151,21 @@ void Looper::Insert(const LoopEvent &ev)
 {
 	if (count_ >= kMaxEvents) return;
 
-	// Keep the array sorted by FIRE time — not by the raw stored tick.
+	// Keep the array sorted by FIRE time.
 	//
-	// This distinction is load-bearing. Quantisation can move an event across
-	// the loop boundary (a hit at tick 5 fires at tick 0; a hit at tick 763
-	// fires at tick 0 of the NEXT pass), so an array sorted by raw tick is not
-	// sorted by the order things actually sound, and the cursor walk in Fire()
-	// then double-fires or strands events. Sorting by fire time restores the
-	// invariant the walk depends on. tools/loopsim.py caught this as a hit
-	// sounding twice per pass.
+	// Since quantisation moved to capture time, FireTick() is just ev.tick and
+	// the two are the same thing — but the sort still has to happen, and going
+	// through FireTick() rather than reading ev.tick keeps every ordering
+	// decision in one place if that ever changes again.
+	//
+	// The reason this is load-bearing has not gone away, only moved: rounding
+	// can push a hit near the end of the loop across the BOUNDARY (a hit at
+	// tick 763 quantises up to tick 0 of the next pass), so a hit recorded
+	// late in the bar can legitimately sort before one recorded early in it.
+	// QuantiseTick() does that wrap now, at RecordHit(), rather than
+	// FireTick() doing it on every playback. Get the order wrong and the
+	// cursor walk in Fire() double-fires or strands events —
+	// tools/loopsim.py caught exactly that as a hit sounding twice per pass.
 	//
 	// An insertion-sort step: O(n) worst case at 512 entries, but it happens at
 	// most a few times a second at control rate and is bounded, so it is
@@ -194,8 +214,20 @@ void Looper::RecordHit(int8_t voice, uint8_t velocity)
 			if (IsKnobEvent(events_[i].what)) { Remove(i); break; }
 	}
 
+	// Quantised HERE, once, against whatever grid is live right now — not
+	// left raw for FireTick() to re-round on every playback. That is the
+	// whole difference from how NIBBLE's looper worked, and it is
+	// deliberate: quantisation used to be a non-destructive PLAYBACK filter
+	// (never touching the stored tick, so it could be changed or removed
+	// later with the original timing intact). Making the grid live and
+	// cyclable broke that assumption in a way that mattered musically —
+	// changing the grid mid-performance must not retroactively move hits
+	// already recorded under a different one, or overdubbing a new part at
+	// 8ths would silently drag the 12th-quantised part underneath it onto a
+	// grid it was never played against. Snapping once at capture is what
+	// makes each hit remember its own grid permanently.
 	LoopEvent ev;
-	ev.tick  = playHead_;
+	ev.tick  = QuantiseTick(playHead_);
 	ev.what  = static_cast<uint8_t>(voice);
 	ev.value = velocity;
 	Insert(ev);

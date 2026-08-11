@@ -10,9 +10,13 @@
 //   3. IT FITS. Four bytes per event, 512 events, 2KB total. One second of
 //      48kHz audio would be 96KB.
 //
-// Quantisation is applied at PLAYBACK, never at capture: the raw tick is what
-// gets stored. That keeps it non-destructive, so a later version can add swing
-// or humanise without having thrown the original timing away.
+// Quantisation of DRUM HITS is applied at CAPTURE — see QuantGrid's comment
+// for why this reverses the card's original design (a live playback filter
+// cannot let two different grids, e.g. a straight part and a triplet fill,
+// coexist in one loop; snapping once at RecordHit() time can). Filter/tone
+// AUTOMATION is the one thing still true to the original design: never
+// snapped at all, at capture or playback, because a quantised knob sweep is
+// a staircase rather than a curve.
 
 #pragma once
 #include <stdint.h>
@@ -158,9 +162,37 @@ constexpr int kTicksPerBeat = 48;
 constexpr int kBeatsPerLoop = 16;
 constexpr int kLoopTicks    = kTicksPerBeat * kBeatsPerLoop;   // 768
 
-/// Playback quantisation: 1/16 notes. A lo-fi drum looper played with fingers
-/// on a resistor network needs it.
-constexpr int kQuantTicks = kTicksPerBeat / 4;                 // 12
+/// Quantisation grid, as a divisor of kTicksPerBeat. A lo-fi drum looper
+/// played with fingers on a resistor network needs it.
+///
+/// RUNTIME now, not a constant — cycled live by the QUANTISE gesture
+/// (switch+AD). Three settings, all EXACT divisors of kTicksPerBeat=48 by
+/// construction (see the comment above): 16th is the default a beginner
+/// wants, 12th is the triplet feel, 8th is loose enough to keep a
+/// deliberately sloppy take human.
+///
+/// APPLIED AT CAPTURE, NOT PLAYBACK — a deliberate reversal of this file's
+/// original quantisation design (still true for filter/tone automation,
+/// which is never snapped at all). RecordHit() rounds to whatever grid is
+/// live at the moment of the hit and stores THAT tick; playback never
+/// re-rounds it. Two things follow, both wanted:
+///
+///   - cycling the grid mid-performance never moves anything already
+///     recorded, so a straight part recorded under 16ths and a triplet part
+///     recorded under 12ths coexist in the same loop, each on the grid it
+///     was played against. A live playback filter cannot do this — one
+///     divisor applies to every event at once, so switching to 12ths for a
+///     triplet fill would retroactively drag the straight part's hits onto
+///     the triplet grid too.
+///   - it costs the non-destructive property the file header still claims
+///     for automation: a hit's ORIGINAL unquantised timing is gone the
+///     instant it is recorded, not recoverable by a future "loosen the
+///     grid" control the way it would be under playback quantisation.
+///     Accepted knowingly — mixed grids in one loop is the more useful
+///     property for this card.
+enum class QuantGrid : uint8_t { k16th = 0, k12th = 1, k8th = 2, kNumGrids = 3 };
+
+constexpr int kQuantDivisor[static_cast<int>(QuantGrid::kNumGrids)] = { 16, 12, 8 };
 
 constexpr int kMaxEvents = 512;
 
@@ -410,6 +442,32 @@ public:
 		return i >= 0 && i < kNumPatterns && patternCount_[i] > 0;
 	}
 
+	// --- quantise grid ------------------------------------------------------
+
+	/// Step to the next grid (16th -> 12th -> 8th -> 16th...).
+	///
+	/// AFFECTS ONLY FUTURE HITS. Quantisation snaps once, at RecordHit() time
+	/// (see QuantiseTick()), so this never touches anything already in the
+	/// loop — cycling from 12ths to 8ths mid-performance does not drag an
+	/// already-recorded 12th-quantised part onto the new grid. Only the next
+	/// overdub pass records against the new setting.
+	///
+	/// No re-sort needed: since existing events' stored ticks never change,
+	/// the array's sorted-by-FireTick() invariant is undisturbed by a grid
+	/// change — unlike an earlier version of this feature, which re-quantised
+	/// at PLAYBACK and had to re-sort the whole array every time the grid
+	/// changed, because a coarser grid could push a hit's fire tick across
+	/// the loop boundary and out of order with its neighbours.
+	QuantGrid CycleQuantGrid()
+	{
+		quantGrid_ = static_cast<QuantGrid>(
+			(static_cast<int>(quantGrid_) + 1)
+			% static_cast<int>(QuantGrid::kNumGrids));
+		return quantGrid_;
+	}
+
+	QuantGrid CurrentQuantGrid() const { return quantGrid_; }
+
 	uint16_t Position() const   { return playHead_; }
 	uint16_t EventCount() const { return count_; }
 	bool     Full() const       { return count_ >= kMaxEvents; }
@@ -438,16 +496,27 @@ private:
 	void RecordLane(uint8_t lane, int32_t knob);
 	bool NearPlayhead(uint16_t tick) const;
 
-	/// The tick at which an event actually sounds, after quantisation. The
-	/// event array is sorted by THIS, not by the raw stored tick — see the
-	/// comment in Insert().
-	static uint16_t FireTick(const LoopEvent &ev);
+	/// Snap a raw tick to the CURRENT grid. Called once, from RecordHit() —
+	/// see QuantGrid's comment for why this is capture-time, not playback.
+	uint16_t QuantiseTick(uint16_t tick) const;
+
+	/// The tick at which an event actually sounds. For a drum hit this is
+	/// just ev.tick — quantisation already happened once, at RecordHit()
+	/// time (see QuantiseTick()) — so despite the name this no longer
+	/// re-derives anything for hits. Kept as its own function because the
+	/// array is sorted by THIS, not by the raw stored tick, and every call
+	/// site already goes through it rather than reading ev.tick directly —
+	/// see the comment in Insert().
+	uint16_t FireTick(const LoopEvent &ev) const;
 
 	LoopEvent events_[kMaxEvents] = {};
 	uint16_t  count_       = 0;
 	uint16_t  knobCount_ = 0;     ///< how many of count_ are automation
 	uint16_t  playHead_ = 0;
 	uint16_t  cursor_   = 0;    ///< index of the next event at or after playHead_
+
+	/// The live playback quantise grid. See CycleQuantGrid()/QuantGrid.
+	QuantGrid quantGrid_ = QuantGrid::k16th;
 
 	// --- undo, depth 1 ----------------------------------------------------
 	// 2KB, the same size as events_ itself. Worth it for one level; a stack

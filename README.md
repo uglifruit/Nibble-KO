@@ -88,6 +88,13 @@ pads show each group's hits going past — full brightness when it sounds, half
 when it is muted, so you can see the pattern you have silenced and time
 bringing it back.
 
+**Mutes are not recorded, and they persist across pattern recalls.** A mute
+is a mixer move rather than part of the music: it says "not this group, right
+now". Recording it would bake a live judgement into the loop and make you
+fight the recording to change your mind. Keeping it as live state instead
+makes mutes an arrangement layer *above* the patterns — drop the hats, swap
+patterns, and the hats stay dropped.
+
 ### Pattern
 
 Three slots, and the **switch is the verb**:

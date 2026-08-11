@@ -209,13 +209,14 @@ Roughly in dependency order:
    to `FireAction()`; `Looper` needs a `QuantiseNow()` and a runtime-settable
    grid. Undo, by contrast, is done.
 
-4. **Mute groups are hardcoded AND not recorded.** Two separate gaps:
-   `MuteGroupOf()` splits the kit three ways by voice index so the mode is
-   testable (the real mapping belongs in the WebUI), and `MutePress` only
-   flips `muted_` — a toggle is never written to the loop, so mutes are live
-   state that survives pattern recalls and is not covered by Undo. The
-   `TODO(step 3)` in `MutePress` is where recording them would go, and
-   `LoopEvent`'s spare tag bits are already sized for it.
+4. **Mute groups are hardcoded.** `MuteGroupOf()` splits the kit three ways
+   by voice index so the mode is testable; the real mapping belongs in the
+   WebUI alongside sample assignment.
+
+   Note that mutes NOT being recorded is a decision, not a gap — see the
+   note in `MutePress`. A mute is a mixer move rather than part of the
+   music, so it stays card state, persists across pattern recalls, and is
+   outside Undo. Do not "finish" it.
 
 5. **`kVoiceSample` is compile-time.** Five voices are sampled and seven
    synthesised, fixed at build. The indirection is already right for a

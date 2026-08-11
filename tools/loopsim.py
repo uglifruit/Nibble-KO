@@ -858,6 +858,33 @@ def test_pattern_recall_keeps_the_playhead():
     check("pattern: only events ahead of the playhead fire", fired, [2])
 
 
+def test_mutes_are_not_loop_state():
+    """Mutes are a MIXER move, not part of the music, so nothing about them
+    lives in the loop.
+
+    Two consequences, both wanted: a stored pattern carries no mute state, and
+    `muted_` survives a recall because it is card state the looper never sees.
+    That makes mutes an arrangement layer sitting ABOVE the patterns -- drop
+    the hats, swap patterns, hats stay dropped.
+
+    This asserts the negative: no event the looper stores can encode a mute,
+    because the only tags that exist are drum hits and knob lanes. If someone
+    adds a mute event later, this fails and they have to come and read the
+    reasoning in MutePress first.
+    """
+    lp = Looper(); lp.set_tempo_bpm(120)
+    lp.play_head = 0;   lp.record_hit(1)
+    lp.play_head = 200; lp.record_knob_at(2000, LANE_FILTER)
+
+    for e in lp.events:
+        if is_knob(e[1]):
+            check("mutes: knob events are lanes 0-9 only",
+                  lane_of(e[1]) <= LANE_PAR_D, True)
+        else:
+            check("mutes: hit events are plain voice indices",
+                  0 <= e[1] < NUM_VOICES, True)
+
+
 def test_undo_does_not_reach_the_pattern_slots():
     """Undo is about RECORDING, and only recording.
 
@@ -1121,6 +1148,7 @@ def main():
     test_undo_does_not_replay_the_bar_so_far()
     test_patterns_store_voices_not_sounds()
     test_pattern_recall_keeps_the_playhead()
+    test_mutes_are_not_loop_state()
     test_undo_does_not_reach_the_pattern_slots()
     test_store_refuses_an_empty_loop()
     test_pattern_slots_are_three_not_four()

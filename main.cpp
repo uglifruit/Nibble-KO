@@ -837,7 +837,20 @@ private:
 		muted_ ^= static_cast<uint8_t>(1u << slot);
 		FlashCombo(combo);
 
-		// TODO(step 3): record the toggle as a kActionEvent when recording_.
+		// MUTES ARE DELIBERATELY NOT RECORDED, and this is a decision rather
+		// than an unfinished edge.
+		//
+		// A mute is a MIXER move, not part of the music: it says "not this
+		// group, right now", which is about the arrangement you are playing
+		// rather than the pattern you wrote. Recording it would bake a live
+		// judgement into the loop, so every subsequent pass would re-mute for
+		// you and you would have to fight the recording to change your mind.
+		//
+		// The corollary, and the reason this matters: `muted_` is card state
+		// rather than loop state, so it PERSISTS ACROSS PATTERN RECALLS. Drop
+		// the hats and swap patterns and the hats stay dropped, which is what
+		// makes mutes usable as an arrangement layer sitting above the
+		// patterns rather than something each pattern carries its own copy of.
 	}
 
 	/// Which 0..2 slot a "hold `shift`, tap the other one" gesture names.

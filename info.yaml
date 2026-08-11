@@ -125,7 +125,7 @@ controls:
   switch:
     up:
       name: Record
-      description: Play the current mode AND record it. Drum hits, effects and knob movements are captured the same way. Mute toggles are NOT yet recorded - they are live state only. The loop stores events rather than audio, so overdubbing never degrades what is already there.
+      description: Play the current mode AND record it. Drum hits, effects and knob movements are captured the same way. Mute toggles are deliberately NOT recorded - a mute is a mixer move rather than part of the music, so it stays live state and persists across pattern recalls, making it an arrangement layer above the patterns. The loop stores events rather than audio, so overdubbing never degrades what is already there.
     middle:
       name: Play
       description: Play the current mode without recording.

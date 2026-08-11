@@ -61,9 +61,12 @@ And with a **pair** held, one-shot actions:
 | Hold switch, press | |
 |---|---|
 | **A + B** | **Undo** — revert the last recording pass (not pattern stores; see below) |
-| **A + C** | **WebUI** — hand the card over to USB *(not yet implemented)* |
-| **A + D** | **Quantise** — cycle the record grid: 16th → 12th → 8th |
+| **A + C** | **Quantise** — cycle the record grid: 16th → 12th → 8th |
 | **C + D** | **Play / Stop** |
+| **B + D** | **WebUI** — hand the card over to USB *(not yet implemented)* |
+
+The adjacent pairs carry what you reach for mid-take. The WebUI takes the
+awkward diagonal, since it is a setup activity done with both hands free.
 
 > **Why singles commit on release but pairs fire instantly.** Four Voltages
 > holds its last voltage, so the CV may already be sitting on the single you
@@ -134,9 +137,18 @@ readable at a glance.
 
 ### Quantise
 
-**switch + A+D** cycles the grid new hits snap to: **16th → 12th (triplet) →
-8th**, and round again. The status LEDs blink a count so you know where you
-landed — one blink for 16ths, two for 12ths, three for 8ths.
+**switch + A+C** cycles the grid new hits snap to: **16th → 12th (triplet) →
+8th**, and round again. The two status LEDs show which, as a pattern you read
+at a glance rather than a count:
+
+| LEDs | Grid |
+|---|---|
+| **4** alone | 16th |
+| **4 and 5** | 12th (triplet) |
+| **5** alone | 8th |
+
+The middle setting sits visually between the outer two, which is also where
+it sits musically.
 
 **It only affects hits recorded from that point on.** A hit is snapped once,
 at the moment you play it, and never moves again. That is what lets a

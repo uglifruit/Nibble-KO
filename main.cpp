@@ -96,9 +96,11 @@
 // Holding the shift makes each tap a pair, and the ghost rule silences the
 // release back onto the shift — so tap-tap-tap toggles as often as you like.
 //
-//   switch+AB  enter the USB/browser setup
-//   switch+AC  UNDO           switch+AD  QUANTISE
-//   switch+CD  PLAY/STOP
+//   switch+AB  UNDO          switch+AC  QUANTISE (cycle the record grid)
+//   switch+CD  PLAY/STOP     switch+BD  enter the USB/browser setup
+//
+// The adjacent pairs carry what you reach for mid-take; the WebUI takes the
+// awkward diagonal because it is a setup activity done with both hands free.
 //
 // WHY SINGLES COMMIT ON RELEASE BUT PAIRS FIRE IMMEDIATELY. This asymmetry
 // looks like an inconsistency and is not — both halves fall out of the ghost
@@ -272,14 +274,14 @@ constexpr int32_t kStutterRange = 270;
 /// gesture missed", which are the two things you actually need to separate.
 constexpr int32_t kUndoFlashTicks = (kCtrlRate * 2) / 5;   // 400ms
 
-/// How long each blink of the QUANTISE acknowledgement lasts, and the gap
-/// between them. Slower than the undo flash (kBlinkFast, ~12Hz) on purpose —
-/// this is a COUNT to be read (one/two/three blinks for 16th/12th/8th), and a
-/// count you cannot follow is not a count, it is a flicker.
-constexpr int32_t kQuantBlinkOnTicks  = kCtrlRate / 5;    // 200ms lit
-constexpr int32_t kQuantBlinkGapTicks = kCtrlRate / 6;    // ~165ms dark
-constexpr int32_t kQuantFlashTicks    =
-	3 * (kQuantBlinkOnTicks + kQuantBlinkGapTicks);   // room for the longest count
+/// How long the QUANTISE grid is shown on the status LEDs after a change.
+///
+/// STEADY, not blinking — the grid is displayed as a pattern across LEDs 4
+/// and 5 (see the display code), so it only has to be held long enough to
+/// look at. Long enough to catch out of the corner of an eye mid-take;
+/// short enough that it hands the LEDs back to the beat and record markers
+/// before you need them again.
+constexpr int32_t kQuantFlashTicks = (kCtrlRate * 4) / 5;   // 800ms
 
 /// How long a mode-select gesture must have the switch down before the release
 /// counts as a deliberate selection.
@@ -697,7 +699,6 @@ private:
 			// LEDs can show it.
 			quantGrid_    = loop_.CycleQuantGrid();
 			quantFlash_   = kQuantFlashTicks;
-			quantBlinksLeft_ = static_cast<int>(quantGrid_) + 1;  // 1/2/3
 			break;
 
 		case Action::EnterWebUi:
@@ -1742,21 +1743,23 @@ private:
 			return;
 		}
 
-		// QUANTISE borrows the same two LEDs, but blinks a COUNT rather than
-		// just flickering: one for 16ths, two for 12ths, three for 8ths. It
-		// has to be countable, so the period is slow enough to follow (see
-		// kQuantBlinkOnTicks) rather than the ~12Hz undo flutter, which reads
-		// as "something happened" but carries no number.
+		// QUANTISE borrows the same two LEDs and shows the grid as a PATTERN
+		// rather than a count:
+		//
+		//   LED 4 alone    16th
+		//   LED 4 and 5    12th (triplet)
+		//   LED 5 alone    8th
+		//
+		// Better than blinking one/two/three because there is nothing to
+		// count — you read it in one glance, the way you read the mute pads,
+		// and the middle setting sits visually between the outer two, which
+		// is also where it sits musically.
 		if (quantFlash_ > 0)
 		{
-			// Count DOWN from the start of the window so blink 1 comes first.
-			const int32_t elapsed = kQuantFlashTicks - quantFlash_;
-			const int32_t period  = kQuantBlinkOnTicks + kQuantBlinkGapTicks;
-			const int32_t which   = elapsed / period;      // 0,1,2...
-			const int32_t phase   = elapsed % period;
-			const bool on = (which < quantBlinksLeft_) && (phase < kQuantBlinkOnTicks);
-			LedBrightness(4, on ? kLedFull : 0);
-			LedBrightness(5, on ? kLedFull : 0);
+			const bool led4 = (quantGrid_ != QuantGrid::k8th);
+			const bool led5 = (quantGrid_ != QuantGrid::k16th);
+			LedBrightness(4, led4 ? kLedFull : 0);
+			LedBrightness(5, led5 ? kLedFull : 0);
 			return;
 		}
 
@@ -1966,7 +1969,6 @@ private:
 	/// so the LED display can read it without querying the looper every tick.
 	QuantGrid quantGrid_       = QuantGrid::k16th;
 	int32_t   quantFlash_      = 0;   ///< counts down while acknowledging
-	int       quantBlinksLeft_ = 0;   ///< 1/2/3 for 16th/12th/8th
 
 	// --- pattern slots ----------------------------------------------------
 	/// Which slot is playing. Starts at 0 so the first store has an obvious

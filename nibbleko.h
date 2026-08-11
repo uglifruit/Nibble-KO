@@ -159,17 +159,26 @@ enum class Action : uint8_t {
 
 /// Which action each PAIR fires, indexed by (combo - kNumSingles) so it lines
 /// up with kPairMembers.
-/// UNDO takes AB, the easiest pair to hit, because it is the one action you
-/// reach for mid-performance and under pressure -- you have just recorded
-/// something wrong and want it gone before the loop comes round again.
+///
+/// The layout follows how often you reach for each thing under pressure. The
+/// ADJACENT pairs -- AB, CD, and AC across the top row -- are the ones a hand
+/// already on the buttons can hit without looking, so they carry the actions
+/// you want mid-performance:
+///
+///   AB  UNDO       you have just recorded something wrong and want it gone
+///                  before the loop comes round again
+///   AC  QUANTISE   changing the grid between overdub passes is a normal part
+///                  of building a pattern, not a setup step
+///   CD  PLAY/STOP
+///
 /// Entering the WebUI is a setup activity done once with both hands free, so
-/// it can afford the more awkward gesture.
+/// it takes the awkward diagonal (BD) rather than a comfortable pair.
 constexpr Action kActionForPair[kNumPairs] = {
 	Action::Undo,         // AB
-	Action::EnterWebUi,   // AC
-	Action::Quantise,     // AD
+	Action::Quantise,     // AC
+	Action::None,         // AD  (reserved)
 	Action::None,         // BC  (reserved)
-	Action::None,         // BD  (reserved)
+	Action::EnterWebUi,   // BD
 	Action::PlayStop,     // CD
 };
 

@@ -102,9 +102,9 @@ records it. Latching is what lets every mode be recorded through one
 mechanism, since Down and Up never need to be held at once.
 
     switch+A  DRUMS (default)    switch+AB  UNDO
-    switch+B  MUTE               switch+AC  WebUI setup
-    switch+C  FX  (twelve)       switch+AD  QUANTISE
-    switch+D  PATTERN (three)    switch+CD  PLAY/STOP
+    switch+B  MUTE               switch+AC  QUANTISE (cycle record grid)
+    switch+C  FX  (twelve)       switch+CD  PLAY/STOP
+    switch+D  PATTERN (three)    switch+BD  WebUI setup
 
 **Singles commit on RELEASE; pairs fire IMMEDIATELY.** That asymmetry is not
 an oversight and should not be "fixed" — both halves fall out of the ghost

@@ -13,14 +13,17 @@ uploaded from a browser WebUI — the sample-management pattern from
 
 ## Current status: PLAYABLE, TESTED ON HARDWARE
 
-Builds to `build/nibbleko.uf2` — **6.6% flash, 14.2% RAM**. Confirmed working
+Builds to `build/nibbleko.uf2` — **6.6% flash, 14.4% RAM**. Confirmed working
 on a Workshop Computer: drums, the four-bar looper with lossless overdub,
 three mute groups, twelve performance effects with two-lane recording, three
 pattern slots, and sample playback from a baked bank.
 
-**Nothing is saved.** Calibration and patterns are RAM only, so both die at
-power-off, and the card recalibrates at every boot. That plus the browser app
-is the bulk of what is left — see "What's NOT here".
+**Calibration is flash-persisted** (`calibstore.h`) — a normal boot loads the
+last saved levels and is playable within the splash; only an alt-boot (switch
+Down through the boot-settle window) forces a fresh learn, and a successful
+learn is saved automatically. **Patterns are still RAM only** and die at
+power-off. That plus the browser app is the bulk of what is left — see
+"What's NOT here".
 
 ## Build
 
@@ -62,9 +65,11 @@ Identical platform constraints to NIBBLE and WorkshopBio — see
 - `CVOutMillivolts()` / `CVOutMIDINote()` are **flash-resident**. Cache the
   last value and only call them on a change, or they put XIP reads in the hot
   loop.
-- If this card ends up carrying USB (it will, for the WebUI), writing flash
-  while ComputerCard runs **will hang the card** unless the five-step
-  protocol in `docs/LESSONS.md` is followed exactly. Read it before touching
+- Writing flash while ComputerCard runs **will hang the card** unless the
+  relevant steps of the five-step protocol in `docs/LESSONS.md` are followed.
+  `calibstore.h` already does this (see its header for which steps apply with
+  no USB in the build). If this card ends up carrying USB (it will, for the
+  WebUI), the full five steps apply — read `docs/LESSONS.md` before touching
   `webui.cpp`'s stubbed flash-write methods.
 
 ## What's here
@@ -81,6 +86,7 @@ Ported and adapted from `../WoskshopButtons` (NIBBLE) and `../WorkshopBio`
 | `fastmath.h/.cpp` | Ported unchanged (namespace only) | NIBBLE's fixed-point helpers |
 | `samples_default.h` | Written new | The baked sample BANK plus `kVoiceSample`, the voice→bank mapping |
 | `samplestore.h` | Written new, wired in | `ResolveSample()` is called per hit from `DrumKit::TriggerVoice` |
+| `calibstore.h` | Written new, wired in | Flash-persisted calibration, sibling layout to `samplestore.h`; `SaveCalibration()`/`LoadSavedCalibration()` called from `main.cpp`'s `LearnTick()` and boot splash |
 | `webui.h` | Written new, interface only | Adapted from WorkshopBio's message set to 12 flat slots + new `MSG_SET_SOURCE` |
 | `webui.cpp` | **Stub** — only `Encode7bit`/`Decode7bit` are real | Everything hardware-touching is a TODO |
 | `tools/importbank.py`, `mksamples.py` | Written new | WAV → numbered bank entries; `importwav.py` supplies the DSP |
@@ -181,20 +187,12 @@ ticks first and expired instantly at slow tempos.
 
 Roughly in dependency order:
 
-1. **Nothing is saved to flash.** Calibration and the three pattern slots are
-   both RAM only, so both die at power-off. Two pieces of temporary
-   scaffolding exist around the calibration half, marked `TODO(calibstore)`:
-   - **Every boot calibrates**, not just the alt-boot. Without saved levels a
-     normal boot would come up on the evenly-spaced *default* spread, which
-     is not a real calibration and cannot be played.
-   - **Abort and timeout RESTART the learn** rather than exiting, because
-     exiting would land on that same unplayable default. Once levels can be
-     restored, aborting should go back to meaning "keep what I had".
-
-   Needs a small `calibstore.h` (sibling to `samplestore.h`, own 4KB sector)
-   and the five-step flash protocol from `docs/LESSONS.md`. **Highest-value
-   next task** — it is what turns the card from "recalibrate every time you
-   power it on" into the design that was agreed.
+1. **Patterns are not saved to flash.** The three pattern slots are RAM only,
+   so they die at power-off — unlike calibration, which is now persisted (see
+   `calibstore.h`). A pattern is a bare event list under 2KB with no audio
+   attached, so this is the natural first WebUI transfer target (item 2
+   below) rather than needing its own flash-write path: land it as part of
+   the pattern-transfer protocol instead of a separate store.
 
 2. **No WebUI.** `webui.h` is an interface shape, `webui.cpp` a stub (only
    the 7-bit codec is real), and it is **not in the build**. No `web/`
@@ -262,6 +260,7 @@ ever built against each other or diffed side by side.
 | `drums.h/.cpp` | Twelve voices: synth engine (working), sample backend (TODO), DJ filter |
 | `looper.h/.cpp` | Event loop: record, overdub, tempo, external clock |
 | `samplestore.h` | Flash layout for user-uploaded samples, per voice slot (not wired in) |
+| `calibstore.h` | Flash layout for the saved calibration levels — wired in |
 | `samples_default.h` | `__has_include` shim so the build works with or without baked samples |
 | `webui.h/.cpp` | USB-MIDI SysEx transport + upload state machine (interface + stub) |
 | `web/` | Browser sample manager — not written yet, see `web/README.md` |

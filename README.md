@@ -215,8 +215,14 @@ button down, which one you meant is ambiguous.
 ## Calibration is the whole game
 
 Patch **output 1** of Four Voltages into CV In 1, with its **knob at about
-twelve o'clock**. Calibration runs at power-up: the LEDs show a combination,
-you hold it and tap the switch to capture, ten times over.
+twelve o'clock**. A normal power-up loads the last saved calibration from
+flash and is playable immediately. Holding the switch **Down** through the
+first moment of boot forces a fresh calibration instead: the LEDs show a
+combination, you hold it and tap the switch to capture, ten times over. A
+successful run is saved, and stays saved across power cycles until the next
+alt-boot learn replaces it — so recalibrate only when the Four Voltages knob
+has actually moved. Aborting a re-calibration (hold the switch 2s) keeps
+whatever was saved before, rather than losing it.
 
 > **Give it well-separated voltages, or nothing else will work properly.**
 
@@ -290,8 +296,6 @@ map couldn't silently change an old loop.
 
 ## What isn't done
 
-- **Calibration is not saved.** The card recalibrates at every power-up. The
-  flash write is the next substantial piece of work.
 - **No browser sample manager.** The USB/SysEx layer is a stub, so samples are
   baked at build time rather than uploaded.
 - **Patterns are RAM only** — they do not survive a power cycle. Getting

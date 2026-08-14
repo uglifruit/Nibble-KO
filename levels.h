@@ -197,10 +197,14 @@ private:
 	int8_t Match(int32_t v, int8_t cur) const;
 	void   Rebuild();
 
-	// --- learned data. RAM ONLY, never flash -----------------------------
-	// The Four Voltages knob moves every one of these, so a saved calibration
-	// would silently restore a WRONG one on the next power-up. Not persisting
-	// is a deliberate design decision, not an omission.
+	// --- learned data ------------------------------------------------------
+	// Saved to flash by calibstore.h once a learn succeeds, and restored at
+	// boot instead of re-learning — see main.cpp's LearnTick()/EnterLearn().
+	// The Four Voltages knob moving would invalidate a saved calibration
+	// silently, but the knob is not expected to move in normal use, and
+	// recalibrating on every power-up made the card unplayable within
+	// seconds of switch-on. The escape hatch is the alt-boot learn, still one
+	// gesture away, for when the knob genuinely has moved.
 	int32_t level_[kNumLevels]     = {};
 	uint8_t sorted_[kNumLevels]    = {};   // combo indices, ascending by level_
 	uint8_t slotOf_[kNumLevels]    = {};   // inverse of sorted_, for hysteresis

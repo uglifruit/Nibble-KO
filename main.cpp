@@ -132,16 +132,16 @@
 //   Pulse Out 1  gate on every hit        Pulse Out 2  click, one per beat
 //   CV Out 1/2   unassigned for now
 //
-// Calibration is meant to be the ALT-BOOT mode — hold the switch down at
-// power-on — with the learned levels saved to flash and reloaded on every
-// normal boot. THAT IS NOT WHAT THIS BUILD DOES: the flash side does not
-// exist yet, so EVERY boot calibrates and then exits into DRUMS. See the
-// splash handler in ProcessSample(), and TODO(calibstore) in LearnTick().
+// Calibration is the ALT-BOOT mode — hold the switch down at power-on — with
+// the learned levels saved to flash (calibstore.h) and reloaded on every
+// normal boot, so a normal power-up is playable within the splash. See the
+// splash handler in ProcessSample().
 //
 // DURING a calibration the switch has a different job, as it does in NIBBLE:
 //
 //   tap        capture the voltage of the combo you are holding
-//   hold 2s    throw this calibration away and start it again
+//   hold 2s    throw this calibration away — reverts to the last SAVED
+//              calibration if one exists, otherwise starts the learn again
 //
 // Capture is a TAP rather than the button press itself because the press and
 // the voltage arriving are the same event — the settle detector cannot have
@@ -165,6 +165,7 @@
 #include "looper.h"
 #include "fx.h"
 #include "fastmath.h"
+#include "calibstore.h"
 
 #include "hardware/vreg.h"
 #include "pico/stdlib.h"
@@ -469,21 +470,28 @@ public:
 			{
 				for (int i = 0; i < kNumLeds; i++) LedOff(i);
 
-				// EVERY boot calibrates, for now.
+				// Only the ALT-boot (switch held Down through the settle
+				// window) forces a fresh learn. A normal boot restores the
+				// saved levels from flash and goes straight to Play — that is
+				// the whole point of persisting them: the card is playable
+				// within the splash, not after a ten-tap learn every time.
 				//
-				// The intended design is that only the ALT-boot calibrates and
-				// a normal boot restores the saved levels from flash — that is
-				// the whole point of persisting them. But the flash side does
-				// not exist yet (see TODO(calibstore) in LearnTick), so a
-				// normal boot would come up on the evenly-spaced DEFAULT
-				// spread, which is not a real calibration and cannot be played
-				// reliably enough to test anything else.
-				//
-				// So both paths run the learn until calibstore lands. The
-				// alt-boot latch is still read and still displayed on the
-				// splash, so the gesture stays exercised and this becomes a
-				// one-line change later rather than a re-think.
-				EnterLearn();
+				// A normal boot with NOTHING saved yet (a fresh card, before
+				// its first-ever learn) has no calibration to restore, so it
+				// falls back to Learn same as an explicit alt-boot — there is
+				// no useful default to play on instead.
+				if (!calibrateBoot_ && HaveSavedCalibration())
+				{
+					int32_t saved[kNumLevels];
+					LoadSavedCalibration(saved);
+					levels_.LearnFrom(saved);
+					levels_.ResetHeld();
+					ui_ = UiMode::Play;
+				}
+				else
+				{
+					EnterLearn();
+				}
 
 				// The switch may still be held Down from an alt-boot, with its
 				// release still to come. Swallow that: otherwise the release
@@ -1370,14 +1378,13 @@ private:
 		toneLane_.Forget();
 	}
 
-	/// Throw away the captures and start the learn again.
+	/// Throw away the captures in progress.
 	///
-	/// This only ANNOUNCES the abort; LearnTick() calls EnterLearn() once the
-	/// flash has played out. Restarting here directly would skip the flash
-	/// entirely, and that flash is the only feedback that the gesture worked.
-	///
-	/// (It restarts rather than exiting because there is nowhere useful to
-	/// exit to while every boot must calibrate — see LearnTick.)
+	/// This only ANNOUNCES the abort; LearnTick() decides what happens next
+	/// once the LED flash has played out — exit to Play on the last SAVED
+	/// calibration if one exists, or restart the learn if this card has never
+	/// completed one. Deciding here directly would skip the flash entirely,
+	/// and that flash is the only feedback that the gesture worked.
 	void AbortLearn()
 	{
 		if (learnPhase_ == LearnPhase::Aborted) return;
@@ -1398,17 +1405,14 @@ private:
 				// Only a SUCCESSFUL learn leaves calibration. Confirm and
 				// Collision are per-step feedback and fall back to waiting.
 				//
-				// Failed and Aborted RESTART the learn rather than exiting,
-				// which they did until the levels stopped being restorable
-				// from flash. Exiting drops the card on the evenly-spaced
-				// default, and that spread cannot actually be played — so
-				// there is nothing useful to abort TO, and a mistimed switch
-				// hold would cost a power cycle to undo. Starting over is the
-				// only sensible destination while every boot must calibrate.
-				//
-				// TODO(calibstore): when saved levels exist, these two should
-				// go back to exiting — aborting will then mean "keep the
-				// calibration I already had", which is a real choice.
+				// Failed and Aborted exit to Play on the calibration ALREADY
+				// SAVED in flash, if one exists — aborting means "keep what I
+				// had", a real choice now that there is something to keep.
+				// With nothing saved yet (a card's very first-ever learn, or
+				// one that failed before completing once), there is still
+				// nowhere useful to exit to: the evenly-spaced default cannot
+				// actually be played, so restart is the only sensible
+				// destination in that case only.
 				if (learnPhase_ == LearnPhase::Done)
 				{
 					// Drop whatever combo the learn left "held", or the first
@@ -1419,7 +1423,18 @@ private:
 				else if (learnPhase_ == LearnPhase::Failed
 				      || learnPhase_ == LearnPhase::Aborted)
 				{
-					EnterLearn();
+					if (HaveSavedCalibration())
+					{
+						int32_t saved[kNumLevels];
+						LoadSavedCalibration(saved);
+						levels_.LearnFrom(saved);
+						levels_.ResetHeld();
+						ui_ = UiMode::Play;
+					}
+					else
+					{
+						EnterLearn();
+					}
 				}
 				else
 				{
@@ -1500,10 +1515,7 @@ private:
 			else
 			{
 				levels_.LearnFrom(captured_);
-				// TODO(calibstore): persist to flash here, using the five-step
-				// protocol in docs/LESSONS.md. This is the whole point of the
-				// alt-boot design — without it the card recalibrates every
-				// power-on, same as NIBBLE.
+				SaveCalibration(captured_, levels_.CollisionCount());
 				learnPhase_ = LearnPhase::Done;
 				phaseTimer_ = kDoneFlashTicks;
 			}

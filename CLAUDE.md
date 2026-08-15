@@ -257,25 +257,27 @@ Roughly in dependency order:
 
 ## USB: what is proven, and what is not
 
-**Confirmed on hardware (v1 protocol):** entering WebUI mode (switch+B+D),
-enumeration, `MSG_HELLO`/`MSG_INFO`, live re-assignment, a WAV upload
-including the five-step flash write, uploaded audio surviving a power cycle,
-and `MSG_ERASE`.
+**Confirmed on hardware, v2 library protocol:** entering WebUI mode
+(switch+B+D), enumeration, `MSG_HELLO`/`MSG_INFO`, live re-assignment to any
+source (synth/baked/user), `MSG_SAVE_MAP`, a WAV upload including the
+five-step flash write, uploaded audio and the slot map both surviving a power
+cycle, `MSG_LIBRARY`'s drip-fed listing, and `MSG_ERASE`.
 
-**Unproven — the v2 library rework changed all of this.** The upload path is
-the same shape and the same flash protocol, but the header layout, the
-message set and the browser are new:
+Two real bugs were found this way and are not hypothetical:
+`CommitHeaderLive()`'s attempt to keep USB up across a flash write hung the
+card (reverted — see "every flash write reboots", above), and `MSG_LIBRARY`'s
+first drip-feed attempt called `tud_task()` from inside `HandleSysex()` and
+corrupted the reply stream, so an upload would land its audio and then report
+an empty library. Both are written up in `docs/LESSONS.md`.
 
-- the v2 `UserSampleHeader` (library entries + slot map, `kUserMagic` bumped)
-- `MSG_SAVE_MAP`, `MSG_NAME`, `MSG_DELETE`, `MSG_LIBRARY`/`MSG_LIBDET`
-- `LoadSlotSources()` restoring the kit at boot
-- the burst reply in `MSG_LIBRARY`, which pumps `tud_task()` between sends
-  because 32 entries is 768 bytes against a 256-byte TX FIFO
+**Not yet exercised on the current protocol:** `MSG_NAME` and `MSG_DELETE`
+(same commit path as `MSG_SAVE_MAP`, which is proven, but not separately
+confirmed), and a library at or near `kMaxUserSamples` (32 entries) —
+everything tested so far has been a handful of samples.
 
 **A v2 card cannot read a v1 upload.** `kUserMagic` changed, so
 `HaveUserSamples()` answers false and the card falls back to baked samples —
-which is the intended failure, not a bug. Anything uploaded before this
-needs re-uploading.
+which is the intended failure, not a bug.
 
 ## Known gaps in what IS written
 

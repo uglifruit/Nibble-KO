@@ -40,7 +40,6 @@ namespace nko {
 volatile bool WebUI::usbMode = false;
 volatile bool WebUI::uploadMode = false;
 volatile bool WebUI::core0Parked = false;
-volatile bool WebUI::pauseAudio = false;
 volatile uint8_t WebUI::stage = 0;
 
 // ---------------------------------------------------------------------------
@@ -273,40 +272,31 @@ void __not_in_flash_func(WebUI::SeedHeaderFromFlash)()
 	}
 }
 
-/// Rewrite the header sector and carry on playing.
+/// Write the header sector, then reboot. There is no way to do this and keep
+/// playing, and the attempt is what hung the card.
 ///
-/// The audio interrupt still has to stop — an erase drops XIP and core 0's
-/// caller lives in flash — but USB does NOT, because nothing here writes the
-/// data area and TinyUSB's own state is in RAM. So the sequence is: park core
-/// 0, mask only the two audio interrupts, write, unmask, release.
+/// THE MISTAKE, RECORDED SO IT IS NOT REPEATED. This function used to leave
+/// USBCTRL_IRQ enabled, on the reasoning that "the USB handler is not reached
+/// during the erase, because tud_task() is not called until XIP is back".
+/// That is false, and obviously so in hindsight: USBCTRL_IRQ is an INTERRUPT.
+/// It fires whenever the host sends a packet, which is entirely outside this
+/// code's control — and TinyUSB's handler lives in flash, so a packet
+/// arriving mid-erase is a hard fault. On the bench that read as "saving the
+/// kit hung the Workshop Computer", with the header half written.
 ///
-/// USBCTRL_IRQ is deliberately left enabled, which is the whole difference
-/// from EnterUploadMode(). That is safe only because this runs ON core 1, is
-/// itself RAM-resident, and the USB interrupt handler is not reached during
-/// the erase — tud_task() is not called until after XIP is back.
-void __not_in_flash_func(WebUI::CommitHeaderLive)()
+/// docs/LESSONS.md §"If you let users upload samples" says to disable all
+/// THREE interrupts and names USBCTRL_IRQ explicitly. It was right.
+///
+/// Once USB is masked TinyUSB's state is inconsistent — the host has seen a
+/// device stop responding mid-transfer — so a reboot is the honest recovery
+/// rather than a convenience. That is why every flash write on this card ends
+/// in watchdog_reboot(), and why the browser is told to expect it.
+void __not_in_flash_func(WebUI::CommitHeaderAndReboot)()
 {
-	WebUI::pauseAudio = true;
-	absolute_time_t deadline = make_timeout_time_ms(250);
-	while (!WebUI::core0Parked && !time_reached(deadline)) tight_loop_contents();
-
-	irq_set_enabled(DMA_IRQ_0, false);
-	irq_set_enabled(PWM_IRQ_WRAP, false);
-
-	// Prime boot2's RAM copy while XIP is definitely still up — same reason
-	// as EnterUploadMode(), and just as necessary here.
-	flash_range_erase(kUserRegionOff, 0);
-
+	EnterUploadMode();     // parks core 0, masks all three, primes boot2
 	CommitHeader();
-
-	irq_set_enabled(PWM_IRQ_WRAP, true);
-	irq_set_enabled(DMA_IRQ_0, true);
-
-	// Release core 0. gVoiceSample is deliberately NOT reloaded from the
-	// header here: every caller has already set it to what it wants and the
-	// header was written FROM it, so re-reading would at best be a no-op and
-	// at worst undo a change made while the write was in flight.
-	WebUI::pauseAudio = false;
+	watchdog_reboot(0, 0, 0);
+	for (;;) tight_loop_contents();   // unreachable; the watchdog has it
 }
 
 void __not_in_flash_func(WebUI::FlushPage)()
@@ -584,16 +574,17 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 
 	case MSG_SAVE_MAP:
 	{
-		// Commit the slot map to flash WITHOUT rebooting — see
-		// CommitHeaderLive(). The audio is untouched, so nothing needs
-		// re-reading and the browser keeps its connection.
+		// Commit the slot map. Acks BEFORE the write, because the write masks
+		// USB and nothing can be sent afterwards — the browser treats the
+		// disconnect that follows as success.
 		SeedHeaderFromFlash();
 		for (int v = 0; v < kNumVoices; v++)
 			hdr_.slotSource[v] = gVoiceSample[v];
 		writeOff_ = hdr_.totalBytes;
 
-		CommitHeaderLive();
 		SendAck(13, 0);
+		FlushUsb(150);
+		CommitHeaderAndReboot();
 		break;
 	}
 
@@ -683,11 +674,12 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 		if (inSession) { SendAck(14, e); break; }
 
 		// Standalone rename: commit now, because the user expects a rename to
-		// stick and there is no later commit coming. Header-only, so it needs
-		// no reboot.
+		// stick and there is no later commit coming. Acks first — the write
+		// takes USB down with it.
 		writeOff_ = hdr_.totalBytes;
-		CommitHeaderLive();
 		SendAck(14, e);
+		FlushUsb(150);
+		CommitHeaderAndReboot();
 		break;
 	}
 
@@ -718,8 +710,9 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 		}
 		writeOff_ = hdr_.totalBytes;
 
-		CommitHeaderLive();
 		SendAck(6, 0);
+		FlushUsb(150);
+		CommitHeaderAndReboot();
 		break;
 	}
 

@@ -77,6 +77,13 @@ Identical platform constraints to NIBBLE and WorkshopBio — see
   `calibstore.h` (no USB in that path, so it needs fewer steps — its header
   says which) and `webui.cpp`'s `EnterUploadMode()`/`WriteStagedBuffer()`
   (all five). Read `docs/LESSONS.md` before touching either.
+- **Every flash write with USB up ends in a reboot. There is no exception for
+  small writes.** `USBCTRL_IRQ` must be masked, and once it is, TinyUSB
+  cannot be resumed. An attempt to keep USB alive across a header-only write
+  hung the card and left the sample directory half erased — the story is in
+  `docs/LESSONS.md` and `webui.cpp`'s `CommitHeaderAndReboot()`. If you find
+  yourself reasoning "the handler is not reached during the erase", stop:
+  interrupts are not control flow.
 - **USB runs on core 1 and is MODAL.** TinyUSB is not initialised, and the
   card does not enumerate, until switch+B+D sets `WebUI::usbMode` — which is
   what keeps `USBCTRL_IRQ` (flash-resident) off the audio path while the card

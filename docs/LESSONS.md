@@ -295,6 +295,31 @@ of it:
 Put the user region at a **fixed offset**, not after the code, so reflashing
 firmware does not move or wipe it.
 
+**There is no "small" flash write that can skip step 2.** NIBBLE-KO tried
+exactly this: save-kit/rename/delete touch only the 4KB header sector and no
+audio, so it seemed obvious that USB could stay up and the card could carry on
+playing instead of rebooting. The justification written in the comment was
+"the USB handler is not reached during the erase, because `tud_task()` is not
+called until XIP is back".
+
+That is false. `USBCTRL_IRQ` is an **interrupt** — it fires when the host
+sends a packet, which is not something the firmware schedules. TinyUSB's
+handler is in flash, so a packet arriving mid-erase is a hard fault. On the
+bench it read as "saving the kit hung the Workshop Computer", and because the
+erase had completed but the program had not, the directory was left blank:
+the audio was still in flash, unreferenced, so the library came back empty
+while a slot still named an entry in it.
+
+The tell is that the reasoning was about *when the code calls something*,
+when the hazard is *when the hardware interrupts it*. If a justification for
+skipping one of these five steps talks only about control flow, it is wrong.
+
+Once `USBCTRL_IRQ` is masked, TinyUSB's state is inconsistent anyway — the
+host has seen the device stop responding mid-transfer — so **rebooting is the
+honest recovery, not a convenience**. Every flash write on this card ends in
+`watchdog_reboot()`, and the browser is told to expect the disconnect and
+treat it as success.
+
 ### Decisions worth reconsidering, not inheriting
 
 NIBBLE chose **synthesised** voices deliberately, and the reasoning does not

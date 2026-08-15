@@ -484,7 +484,8 @@ footer {
     <ul>
       <li>Every gesture can play any sound: its own synth voice, a built-in sample, or one of yours</li>
       <li>Changes are heard <strong>immediately</strong> &mdash; no reboot, so you can audition while you pick</li>
-      <li>Click <code>Save Kit to Card</code> to keep them; without that a power cycle undoes them</li>
+      <li>Click <code>Save Kit to Card</code> to keep them. That writes flash, which
+          <strong>restarts the card</strong> &mdash; press switch+B+D and Connect again to carry on</li>
       <li>One sample can be played by several voices at once, and costs the space of one</li>
     </ul>
 
@@ -586,10 +587,15 @@ const state = {
 /// What to call a library entry. Names are optional — an unnamed entry is
 /// USER1, USER2..., numbered from 1 because that is how they read in a list,
 /// not from 0 like the index they are stored at.
+///
+/// An entry the card does not report at all gets "missing". That is not
+/// hypothetical: an interrupted header write leaves the directory blank while
+/// the audio is still in flash, so a slot can name an entry the library no
+/// longer lists. Saying "missing" beats inventing a USER1 that is not there.
 function entryLabel(e) {
   const lib = state.library.find(x => x.entry === e);
-  if (lib && lib.name) return lib.name;
-  return `USER${e + 1}`;
+  if (!lib) return `missing #${e + 1}`;
+  return lib.name || `USER${e + 1}`;
 }
 
 /// Every sound the card can play, grouped the way the dropdown shows them.
@@ -823,10 +829,9 @@ async function connect() {
               : "Connected. Using built-in samples.", "ok");
   document.getElementById("connect-btn").textContent = "Disconnect";
   document.getElementById("connect-btn").className = "connected";
-  document.getElementById("revert-btn").disabled = !state.info.user;
   updateCapacity();
   renderVoices();
-  renderLibrary();
+  renderLibrary();   // owns the Samples-tab button states
 }
 
 /// Ask the card what each voice is currently pointed at. This is what makes
@@ -951,7 +956,18 @@ function renderVoices() {
 
     // EVERY sound is offered on EVERY slot: any synth voice, every baked
     // sample, every uploaded one. Nothing ties a sound to one pad.
-    const opts = sourceGroups().map(g =>
+    const groups = sourceGroups();
+
+    // If the slot names something the library cannot account for — an
+    // interrupted header write can do this — offer it anyway, marked. A
+    // dropdown that silently omits the current value shows the wrong entry as
+    // selected, and looks like the card changed under you.
+    const known = groups.some(g => g.items.some(o => o.value === sel));
+    if (!known)
+      groups.push({ label: "Unavailable",
+                    items: [{ value: sel, label: sourceLabel(v, src) }] });
+
+    const opts = groups.map(g =>
       `<optgroup label="${g.label}">` +
       g.items.map(o =>
         `<option value="${o.value}"${sel === o.value ? " selected" : ""}>${o.label}</option>`
@@ -1054,7 +1070,11 @@ function renderLibrary() {
 
   document.getElementById("add-btn").disabled = !connected;
   document.getElementById("send-btn").disabled = !connected || state.pending.size === 0;
-  document.getElementById("revert-btn").disabled = !connected || !state.info || !state.info.user;
+  // Enabled whenever connected, NOT only when the card reports user samples.
+  // An interrupted header write leaves the directory blank while audio is
+  // still in flash, and erasing is the way out of exactly that — gating it on
+  // "has user samples" would disable the recovery in the one case needing it.
+  document.getElementById("revert-btn").disabled = !connected;
   updateSpace();
 }
 
@@ -1120,11 +1140,9 @@ document.getElementById("library-list").addEventListener("click", async (e) => {
     for (let i = 0; i < nm.length; i++) msg.push(nm.charCodeAt(i) & 0x7F);
     send(msg);
     await waitAck(10000).catch(() => null);
-    // No reboot: a header-only write keeps USB up, so just re-read.
-    await refreshLibrary();
-    setStatus(`Renamed to ${nm}.`, "ok");
-    renderLibrary();
-    renderVoices();
+    setStatus(`Renamed to ${nm}. The card is restarting — press switch+B+D, ` +
+              `then Connect, to carry on.`, "ok");
+    disconnected();
     return;
   }
 
@@ -1138,25 +1156,23 @@ document.getElementById("library-list").addEventListener("click", async (e) => {
                  `This frees the slot but not the space — only Erase All reclaims bytes.`)) return;
     send([MSG.DELETE, entry]);
     await waitAck(10000).catch(() => null);
-    // No reboot, so re-read both: the library lost an entry, and any voice
-    // that was playing it has been moved back to synth by the card.
-    await refreshLibrary();
-    await refreshSlots();
-    setStatus("Deleted.", "ok");
-    renderLibrary();
-    renderVoices();
+    setStatus("Deleted. The card is restarting — press switch+B+D, then " +
+              "Connect, to carry on.", "ok");
+    disconnected();
   }
 });
 
 document.getElementById("save-map-btn").addEventListener("click", async () => {
   if (!state.midiOut) return;
-  setStatus("Saving the kit…");
+  setStatus("Saving the kit — the card will restart.");
   send([MSG.SAVE_MAP]);
   await waitAck(10000).catch(() => null);
   state.dirtyMap = false;
-  // Header-only write, so the card never left — no reboot, no reconnect.
-  setStatus("Kit saved. It will come back this way after a power cycle.", "ok");
-  renderVoices();
+  // Every flash write masks USB and reboots — see webui.cpp's
+  // CommitHeaderAndReboot(). The disconnect that follows IS success.
+  setStatus("Kit saved. The card is restarting into it — press switch+B+D, " +
+            "then Connect, to carry on.", "ok");
+  disconnected();
 });
 
 document.getElementById("send-btn").addEventListener("click", async () => {

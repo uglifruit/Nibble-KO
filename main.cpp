@@ -460,36 +460,23 @@ public:
 		// the erase begins is a hard fault.
 		//
 		// So core 0 stops inside this function, mutes the outputs, says it has
-		// arrived, and spins. Masking DMA_IRQ_0 alone is NOT sufficient and
-		// that mistake has hung this family of cards before — see
-		// docs/LESSONS.md and webui.cpp's EnterUploadMode().
+		// arrived, and spins until the reboot. It NEVER RETURNS, so the
+		// flash-resident caller never runs again. Masking DMA_IRQ_0 alone is
+		// NOT sufficient and that mistake has hung this family of cards before
+		// — see docs/LESSONS.md and webui.cpp's EnterUploadMode().
 		//
-		// TWO KINDS OF PARK, and the difference is whether it ever returns:
-		//
-		//   uploadMode  a full upload. Core 1 has masked USB and the card
-		//               reboots when the write finishes, so this never
-		//               returns and the flash-resident caller never runs
-		//               again.
-		//   pauseAudio  a HEADER-ONLY write (save kit, rename, delete). USB
-		//               stays up, so core 1 clears the flag when the write is
-		//               done and playing resumes where it left off. No reboot
-		//               means the browser keeps its connection — which is what
-		//               makes assigning a sample straight after uploading it
-		//               possible at all.
-		//
-		// Returning is safe because the caller only resumes once XIP is back:
-		// core 1 does not clear pauseAudio until flash_range_program has
-		// returned and restored it.
-		if (WebUI::uploadMode || WebUI::pauseAudio)
+		// There is no resumable version of this park, and the attempt to add
+		// one hung the card: every flash write has to mask USBCTRL_IRQ, and
+		// once it is masked TinyUSB cannot be resumed. See
+		// webui.cpp's CommitHeaderAndReboot().
+		if (WebUI::uploadMode)
 		{
 			AudioOut1(0);
 			AudioOut2(0);
 			PulseOut1(false);
 			PulseOut2(false);
 			WebUI::core0Parked = true;
-			while (WebUI::uploadMode || WebUI::pauseAudio) tight_loop_contents();
-			WebUI::core0Parked = false;
-			return;
+			for (;;) tight_loop_contents();
 		}
 
 		// ---- Boot window ------------------------------------------------

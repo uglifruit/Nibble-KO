@@ -220,9 +220,17 @@ void __not_in_flash_func(WebUI::Task)()
 	// not fit the TX FIFO, and it cannot be pumped from inside HandleSysex().
 	// Here it is safe — the packet loop above has finished, so there is no
 	// rx_ state to corrupt.
+	//
+	// The tud_task() after it is what actually puts the entry on the wire.
+	// Send() only fills the FIFO and sets txPending_, which is checked ABOVE
+	// this block — so without pumping here the last entry, and the terminator
+	// the browser waits for, would sit in the buffer until some unrelated
+	// message came in. That is exactly what made the library read time out and
+	// come back empty.
 	if (libSending_)
 	{
 		SendNextLibraryEntry();
+		txPending_ = false;
 		tud_task();
 	}
 }

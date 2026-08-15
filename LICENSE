@@ -10,8 +10,8 @@ as you give appropriate credit.
 WHAT THIS COVERS
 
 This licence applies to the card's own source: the physics engines, the voice
-and granular rendering, the USB sample-upload firmware, the web interface and
-the build tooling.
+and granular rendering, the USB sample-upload firmware, and the build
+tooling.
 
 WHAT IT DOES NOT COVER
 
@@ -21,6 +21,12 @@ WHAT IT DOES NOT COVER
 
   * ComputerCard.h — the Music Thing Modular card library by Chris Johnson,
     which keeps its own MIT licence.
+
+  * web/ — the browser setup tool's CSS was written against Johan Eklund's
+    Resonator web UI (johaneklund.io/resonator, GPLv3), copying real values
+    rather than working from visual inspection alone, so web/ carries its own
+    GPLv3 licence rather than this one. See web/LICENSE and
+    web/README.md's Provenance section.
 
 The full licence text follows.
 

@@ -89,14 +89,24 @@ did not need to:
 - **region size** (~1MB) is storage. Uploads **append**, so audio too big for
   one pass usually fits across two.
 
-## Provenance
+## Provenance and licence
 
-The visual design — dark theme, EB Garamond, the tab/panel language — follows
-[Johan Eklund's Resonator](https://johaneklund.io/resonator/), the web UI for
-his own Workshop System card.
+This directory is licensed under **GPLv3** (see [`LICENSE`](LICENSE)), not
+the CC BY 4.0 the rest of the repository uses. Two things were carried over
+from elsewhere, and each explains a different half of that:
 
-The connection handling, ack queueing and upload sequence are ported from
-`../../WorkshopBio/web/index.html`, whose comments record several bugs worth
-not repeating — in particular the ack queue, which exists because installing
-a reply handler per wait drops any reply arriving between waits and puts
-every later wait one message behind.
+**The visual design** — dark theme, EB Garamond, the tab/panel language, and
+a fair amount of the actual CSS (hex values, spacing figures, component
+structure) — was written against
+[Johan Eklund's Resonator](https://johaneklund.io/resonator/) web UI
+([source](https://github.com/TomWhitwell/Workshop_Computer/tree/main/releases/21_resonator/docs),
+GPLv3). That is real values copied across, not an independent
+reimplementation from looking at the page, so this counts as a derivative
+work under copyright and takes Resonator's own licence rather than this
+repo's default.
+
+**The connection handling, ack queueing and upload sequence** are ported
+from `../../WorkshopBio/web/index.html` (also Andy Jenkinson), whose
+comments record several bugs worth not repeating — in particular the ack
+queue, which exists because installing a reply handler per wait drops any
+reply arriving between waits and puts every later wait one message behind.

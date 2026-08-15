@@ -148,14 +148,21 @@
 // trusted the reading yet. Holding the combo and tapping separates the two.
 //
 // ---------------------------------------------------------------------------
-// SINGLE CORE, FOR NOW
+// TWO CORES, AND WHY
 // ---------------------------------------------------------------------------
 //
-// There is no multicore_launch_core1() here. The whole per-sample load — the
-// drum voices, one SVF, the CV stage — is a few hundred cycles against a
-// budget of 4000 at 192MHz. WorkshopBio needed a second core only because
-// TinyUSB's tud_task() measured ~36000 cycles. THAT CHANGES when the WebUI
-// lands: see webui.h. Until then, do not cargo-cult the multicore setup.
+// Core 0 plays the card: the drum voices, one SVF, the CV stage — a few
+// hundred cycles against a budget of 4000 at 192MHz. That never needed a
+// second core and still does not.
+//
+// USB does. TinyUSB's tud_task() measured ~36000 cycles on WorkshopBio, i.e.
+// 14x the entire 20.8us audio budget, so it cannot share the audio interrupt.
+// It lives on core 1 (see core1Entry at the bottom of this file), and it is
+// MODAL: core 1 spins doing nothing until switch+B+D sets WebUI::usbMode, so
+// on a card that is being played the stack is never even initialised.
+//
+// When an upload starts, core 0 parks inside ProcessSample() and core 1 owns
+// the machine — including the LEDs. See ShowUploadProgress().
 
 #include "ComputerCard.h"
 

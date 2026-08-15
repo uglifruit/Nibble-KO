@@ -13,10 +13,17 @@ uploaded from a browser WebUI — the sample-management pattern from
 
 ## Current status: PLAYABLE, TESTED ON HARDWARE
 
-Builds to `build/nibbleko.uf2` — **6.6% flash, 14.4% RAM**. Confirmed working
+Builds to `build/nibbleko.uf2` — **7.4% flash, 83% RAM**. Confirmed working
 on a Workshop Computer: drums, the four-bar looper with lossless overdub,
 three mute groups, twelve performance effects with two-lane recording, three
 pattern slots, and sample playback from a baked bank.
+
+**The RAM figure is the WebUI's 160KB upload staging buffer**, not a leak.
+It only fits because USB is modal — nothing instantiates `WebUI` until
+switch+B+D, by which point the card has stopped playing. Same figure
+WorkshopBio ships on identical hardware. Watch `--print-memory-usage`.
+
+**USB is written but NOT yet hardware-tested** — see "Untested" below.
 
 **Calibration is flash-persisted** (`calibstore.h`) — a normal boot loads the
 last saved levels and is playable within the splash; only an alt-boot (switch
@@ -66,11 +73,14 @@ Identical platform constraints to NIBBLE and WorkshopBio — see
   last value and only call them on a change, or they put XIP reads in the hot
   loop.
 - Writing flash while ComputerCard runs **will hang the card** unless the
-  relevant steps of the five-step protocol in `docs/LESSONS.md` are followed.
-  `calibstore.h` already does this (see its header for which steps apply with
-  no USB in the build). If this card ends up carrying USB (it will, for the
-  WebUI), the full five steps apply — read `docs/LESSONS.md` before touching
-  `webui.cpp`'s stubbed flash-write methods.
+  five-step protocol in `docs/LESSONS.md` is followed. Two places do it:
+  `calibstore.h` (no USB in that path, so it needs fewer steps — its header
+  says which) and `webui.cpp`'s `EnterUploadMode()`/`WriteStagedBuffer()`
+  (all five). Read `docs/LESSONS.md` before touching either.
+- **USB runs on core 1 and is MODAL.** TinyUSB is not initialised, and the
+  card does not enumerate, until switch+B+D sets `WebUI::usbMode` — which is
+  what keeps `USBCTRL_IRQ` (flash-resident) off the audio path while the card
+  is being played. Core 1 is launched from `main()`, never the constructor.
 
 ## What's here
 
@@ -87,15 +97,17 @@ Ported and adapted from `../WoskshopButtons` (NIBBLE) and `../WorkshopBio`
 | `samples_default.h` | Written new | The baked sample BANK plus `kVoiceSample`, the voice→bank mapping |
 | `samplestore.h` | Written new, wired in | `ResolveSample()` is called per hit from `DrumKit::TriggerVoice` |
 | `calibstore.h` | Written new, wired in | Flash-persisted calibration, sibling layout to `samplestore.h`; `SaveCalibration()`/`LoadSavedCalibration()` called from `main.cpp`'s `LearnTick()` and boot splash |
-| `webui.h` | Written new, interface only | Adapted from WorkshopBio's message set to 12 flat slots + new `MSG_SET_SOURCE` |
-| `webui.cpp` | **Stub** — only `Encode7bit`/`Decode7bit` are real | Everything hardware-touching is a TODO |
+| `webui.h` | Written new | WorkshopBio's message set on 12 flat slots + `MSG_SET_SOURCE` |
+| `webui.cpp` | Ported, **untested on hardware** | WorkshopBio's, with mode×variant collapsed to flat voices |
+| `tusb_config.h`, `usb_descriptors.c` | Ported | WorkshopBio's, byte-identical but for the product string |
+| `web/index.html` | Written new | Mockup's visual shell + WorkshopBio's connection/upload logic |
 | `tools/importbank.py`, `mksamples.py` | Written new | WAV → numbered bank entries; `importwav.py` supplies the DSP |
 | `fx.h/.cpp` | Written new | Twelve performance effects, four slots chained in series |
 | `tools/checksize.cmake`, `tools/bin2h.py` | Ported unchanged | WorkshopBio |
 | `tools/ghostsim.py`, `loopsim.py`, `dspsim.py`, `syntax.sh`, `checkyaml.py`, `kittable.py`, `crosscheck.py` | Ported unchanged | NIBBLE — all pass against the ported `.cpp` files (see Verifying changes) |
 | `ComputerCard.h`, `pico_sdk_import.cmake` | Vendored, byte-identical | NIBBLE — **do not edit** |
 | `main.cpp` | Written new | The mode machine, Drum Performance, LEDs, calibration. Structure follows NIBBLE's `main.cpp` closely |
-| `CMakeLists.txt` | Written new | Builds; `webui.cpp` deliberately excluded until it is real |
+| `CMakeLists.txt` | Written new | Builds, with TinyUSB + `pico_multicore` and the `checksize` guard |
 | `info.yaml` | Written new | `draft: true`, `Status: In development` |
 
 ## The control surface
@@ -194,14 +206,23 @@ Roughly in dependency order:
    below) rather than needing its own flash-write path: land it as part of
    the pattern-transfer protocol instead of a separate store.
 
-2. **No WebUI.** `webui.h` is an interface shape, `webui.cpp` a stub (only
-   the 7-bit codec is real), and it is **not in the build**. No `web/`
-   client. Three things want it, in rough order of value:
+2. **The WebUI covers the KIT only.** `webui.cpp` is real and in the build,
+   `web/index.html` is written: connect, per-voice synth/sample assignment
+   (`MSG_SET_SOURCE`, instant, no reboot) and WAV upload all work. What is
+   still missing needs NEW SysEx messages, none of which exist:
    - **pattern transfer** — a pattern is a bare event list under 2KB and
-     carries no audio, so this is close to a straight dump over SysEx
-   - **user samples into flash**, addressed by bank index like the baked ones
-   - **voice/sample assignment, mute-group assignment, loop setup** (bars,
-     swing, quantise grid) — all currently compile-time tables
+     carries no audio, so this is close to a straight dump over SysEx, and
+     is the obvious next one
+   - **mute-group assignment** — `MuteGroupOf()` is still a compile-time
+     function, see item 4
+   - **loop setup** (bars, swing, quantise grid) — card-side only
+
+   The Mutes/FX/Patterns tabs in `web/index.html` are reference displays
+   that say so, rather than controls that quietly do nothing.
+
+   **`gVoiceSample` is not persisted.** An assignment survives until the
+   card reboots, then reverts to the baked defaults. `UserSampleHeader` has
+   `reserved[8]` budgeted for it.
 
 3. **Loop LENGTH is still fixed at four bars.** `kLoopTicks` is only ever
    used in ordinary wrap arithmetic in `looper.cpp` — nothing is sized by it
@@ -222,6 +243,23 @@ Roughly in dependency order:
    synthesised, fixed at build. The indirection is already right for a
    runtime table — it is indices, not audio — so this is a load rather than
    a redesign.
+
+## Untested: the whole USB path
+
+Written, builds clean, ported from a working reference — but **never run on
+hardware**. Until it has been, treat all of this as unproven:
+
+- entering WebUI mode (switch+B+D) and the card enumerating over USB
+- `MSG_HELLO`/`MSG_INFO` round-trip and the capacity figures
+- `MSG_SET_SOURCE` re-pointing a voice live
+- a WAV upload: staging, the five-step flash write, and the reboot after
+- that calibration still survives that reboot (it should — `calibstore.h`
+  landed before this — but it is exactly the kind of thing to check once)
+
+The flash-write path is the dangerous half. `docs/LESSONS.md` §4 and
+`webui.cpp`'s `EnterUploadMode()` explain why: get it wrong and the chip
+hangs rather than misbehaving visibly. The code follows WorkshopBio's
+worked version step for step, but "follows a reference" is not "tested".
 
 ## Known gaps in what IS written
 
@@ -262,8 +300,9 @@ ever built against each other or diffed side by side.
 | `samplestore.h` | Flash layout for user-uploaded samples, per voice slot (not wired in) |
 | `calibstore.h` | Flash layout for the saved calibration levels — wired in |
 | `samples_default.h` | `__has_include` shim so the build works with or without baked samples |
-| `webui.h/.cpp` | USB-MIDI SysEx transport + upload state machine (interface + stub) |
-| `web/` | Browser sample manager — not written yet, see `web/README.md` |
+| `webui.h/.cpp` | USB-MIDI SysEx transport + upload state machine — runs on core 1 |
+| `tusb_config.h`, `usb_descriptors.c` | TinyUSB setup; the product string is what the browser matches on |
+| `web/index.html` | Browser setup tool. Kit tab is live; other tabs are reference — see `web/README.md` |
 | `fastmath.h/.cpp` | Fixed-point helpers, sine LUT, PRNG |
 | `ComputerCard.h` | Vendored MTM library — **do not edit** |
 | `tools/` | Python verification models, `syntax.sh`, `checkyaml.py`, sample pipeline |

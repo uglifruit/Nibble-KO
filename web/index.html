@@ -1,0 +1,956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NIBBLE-KO — Setup</title>
+<!--
+  NIBBLE-KO browser setup tool.
+
+  Talks to the card over WebMIDI SysEx. The card only appears on USB after
+  switch+B+D puts it in WebUI mode (see main.cpp's Action::EnterWebUi), so
+  "not found" almost always means "not in WebUI mode yet" rather than
+  "unplugged" — connect() watches for it appearing rather than making you
+  press the button again.
+
+  The connection, ack-queueing and upload sequence are ported from
+  WorkshopBio/web/index.html, whose comments record several bugs worth not
+  repeating. The audio conversion chain (decode, mono, resample, trim,
+  loudness-match, fade, dither) mirrors tools/importwav.py so a file uploaded
+  here sounds like the same file baked at build time.
+
+  WHAT IS REAL: the Kit tab. Connect, per-voice synth/sample assignment, and
+  WAV upload all speak to the card.
+  WHAT IS NOT: Mutes, FX and Patterns are reference displays only — the card
+  has no SysEx messages for mute-group assignment, pattern transfer or loop
+  settings yet. They are marked as such in the UI rather than quietly
+  pretending to work.
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;1,400&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0a0a0a;
+  --bg-panel: rgba(17, 17, 17, 0.5);
+  --bg-panel-hover: rgba(22, 22, 22, 0.65);
+  --bg-container: rgba(10, 10, 10, 0.2);
+  --bg-modal: #111;
+  --border: #222;
+  --border-strong: #333;
+  --border-hover: #666;
+  --text: #d8d8d8;
+  --text-heading: #e0e0e0;
+  --text-label: #777;
+  --text-muted: #666;
+  --text-dim: #555;
+  --text-faint: #333;
+  --accent: #e0a868;
+  --accent-soft: #c99860;
+  --accent-dim: #7a6142;
+  --err: #cc6a55;
+  --ok: #8fae6e;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  font-family: 'EB Garamond', Georgia, serif;
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100vh;
+}
+
+.mono { font-family: ui-monospace, Consolas, 'Liberation Mono', Menlo, monospace; }
+
+header {
+  display: flex;
+  align-items: baseline;
+  gap: 18px;
+  padding: 30px 40px 22px;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+header h1 {
+  font-size: 21px;
+  font-weight: 400;
+  letter-spacing: 2px;
+  text-transform: lowercase;
+  color: var(--text-heading);
+  margin-right: auto;
+}
+header h1 span { color: var(--accent); }
+
+.tab-btn, #connect-btn, #help-btn {
+  padding: 8px 14px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-label);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  transition: color 0.2s, border-color 0.2s;
+}
+.tab-btn:hover, #connect-btn:hover, #help-btn:hover {
+  color: var(--text-heading);
+  border-color: var(--border-hover);
+}
+button:focus-visible, select:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.tab-btn.active { color: var(--accent); border-color: var(--accent-dim); }
+#connect-btn.connected { color: var(--accent); border-color: var(--accent-dim); }
+
+#status {
+  font-size: 12px;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  align-self: center;
+  max-width: 420px;
+}
+#status.ok  { color: var(--accent); }
+#status.err { color: var(--err); }
+
+main { padding: 36px 40px 60px; max-width: 1040px; margin: 0 auto; }
+.view { display: none; }
+.view.active { display: block; }
+
+section h2 {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  color: var(--text-label);
+  margin-bottom: 16px;
+  font-weight: 400;
+}
+.hint {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-muted);
+  margin-bottom: 18px;
+  line-height: 1.55;
+}
+.notice {
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent-dim);
+  background: var(--bg-container);
+  padding: 12px 16px;
+  font-size: 13px;
+  font-style: italic;
+  color: var(--text-muted);
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+/* ---- Kit ---- */
+.voice-list { display: flex; flex-direction: column; gap: 2px; max-width: 660px; }
+.voice-tile {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  font-size: 14px;
+  background: var(--bg-panel);
+  border: 1px solid transparent;
+  transition: background 0.15s;
+}
+.voice-tile:hover { background: var(--bg-panel-hover); }
+.voice-tile .voice-idx { font-size: 11px; color: var(--text-dim); width: 20px; flex-shrink: 0; }
+.voice-tile .voice-name { flex: 1; letter-spacing: 0.3px; }
+.voice-tile .voice-file {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-dim);
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.voice-tile select {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--text-muted);
+  background: var(--bg-modal);
+  border: 1px solid var(--border-strong);
+  padding: 4px 6px;
+  cursor: pointer;
+  min-width: 148px;
+}
+.voice-tile select.is-sample { color: var(--accent); border-color: var(--accent-dim); }
+.voice-tile .upload-btn {
+  width: 26px; height: 26px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 22px;
+  text-align: center;
+  flex-shrink: 0;
+}
+.voice-tile .upload-btn:hover { color: var(--text-heading); border-color: var(--border-hover); }
+.voice-tile .upload-btn:disabled { color: var(--text-faint); border-color: var(--border); cursor: not-allowed; }
+
+.button-row { display: flex; gap: 8px; margin-top: 22px; max-width: 660px; }
+.button-row button {
+  flex: 1;
+  padding: 11px 16px;
+  border: 1px solid var(--border-strong);
+  background: transparent;
+  color: var(--text-label);
+  font-family: inherit;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: color 0.2s, border-color 0.2s;
+}
+.button-row button:hover:not(:disabled) { color: var(--text-heading); border-color: var(--border-hover); }
+.button-row button:disabled { color: var(--text-faint); border-color: var(--border); cursor: not-allowed; }
+.button-row button.primary:not(:disabled) { color: var(--accent); border-color: var(--accent-dim); }
+
+progress { width: 100%; max-width: 660px; height: 3px; margin-top: 16px; accent-color: var(--accent); }
+
+.capacity {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 14px;
+  letter-spacing: 0.5px;
+}
+
+/* ---- Reference tables (Mutes / FX / Patterns / I-O) ---- */
+.ref-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; }
+.ref-card { border: 1px solid var(--border); background: var(--bg-container); padding: 18px 20px; }
+.ref-card h3 {
+  font-size: 14px; font-weight: 400; color: var(--text-heading); margin-bottom: 4px;
+}
+.ref-card .ref-sub { font-size: 11px; font-style: italic; color: var(--text-muted); margin-bottom: 12px; }
+.ref-row {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 6px 0; font-size: 13px; border-bottom: 1px dotted var(--border);
+}
+.ref-row:last-child { border-bottom: none; }
+.ref-row .ref-key {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px; color: var(--accent); white-space: nowrap; min-width: 92px;
+}
+
+#io-content { max-width: 600px; font-size: 15px; line-height: 1.7; }
+#io-content p { color: var(--text); }
+#io-content hr { border: none; border-top: 1px dotted var(--border); margin: 20px 0; }
+#io-content .io-desc { color: var(--text-muted); font-size: 13px; }
+
+/* ---- Modal ---- */
+.modal {
+  display: none; position: fixed; inset: 0; z-index: 100;
+  background: rgba(0,0,0,0.6); backdrop-filter: blur(4px);
+  justify-content: center; align-items: center; padding: 20px;
+}
+.modal.visible { display: flex; }
+.dialog {
+  background: var(--bg-modal); border: 1px solid var(--border-strong);
+  border-radius: 6px; padding: 26px 32px;
+  max-width: 560px; width: 100%; max-height: 82vh; overflow-y: auto;
+}
+.dialog h3 { font-size: 17px; font-weight: 400; color: var(--text-heading); margin-bottom: 14px; }
+.dialog h4 {
+  font-size: 12px; font-weight: 400; color: var(--text-label);
+  text-transform: uppercase; letter-spacing: 1.5px; margin: 20px 0 8px;
+}
+.dialog p, .dialog li { font-size: 14px; line-height: 1.65; color: var(--text-muted); margin-bottom: 6px; }
+.dialog ul { margin: 0 0 10px; padding-left: 20px; }
+.dialog code {
+  background: rgba(224,168,104,0.12); color: var(--accent);
+  padding: 1px 6px; border-radius: 3px;
+  font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+}
+.dialog-close {
+  display: block; width: 100%; margin-top: 20px; padding: 10px;
+  background: transparent; border: 1px solid var(--border-strong);
+  color: var(--text-label); font-family: inherit; font-size: 12px;
+  text-transform: uppercase; letter-spacing: 1px; cursor: pointer;
+}
+.dialog-close:hover { color: var(--text-heading); border-color: var(--border-hover); }
+
+footer {
+  text-align: center; padding: 24px 40px 40px;
+  font-size: 11px; letter-spacing: 0.5px; color: var(--text-faint);
+}
+
+@media (max-width: 760px) {
+  header { padding: 20px; gap: 10px; }
+  main { padding: 24px 20px 50px; }
+  .ref-grid { grid-template-columns: 1fr; }
+  .voice-tile { flex-wrap: wrap; }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>nibble<span>-ko</span></h1>
+  <button class="tab-btn active" data-tab="kit">Kit</button>
+  <button class="tab-btn" data-tab="mutes">Mutes</button>
+  <button class="tab-btn" data-tab="fx">FX</button>
+  <button class="tab-btn" data-tab="patterns">Patterns</button>
+  <button class="tab-btn" data-tab="io">I/O</button>
+  <button id="help-btn">?</button>
+  <span id="status">Disconnected</span>
+  <button id="connect-btn">Connect USB</button>
+</header>
+
+<main>
+
+  <!-- KIT -->
+  <div class="view active" id="view-kit">
+    <section>
+      <h2>Twelve Voices</h2>
+      <p class="hint">
+        Each slot plays either a synthesised drum voice or a sample. Pick a bank entry to make it
+        a sample, or Synth to use the built-in voice — that takes effect immediately, no reboot.
+        Uploading a WAV replaces what a slot plays and restarts the card when you send it.
+      </p>
+      <div class="voice-list" id="voice-list"></div>
+      <div class="button-row">
+        <button class="primary" id="send-btn" disabled>Send Uploads to Card</button>
+        <button id="revert-btn" disabled>Revert to Built-in Samples</button>
+      </div>
+      <progress id="prog" value="0" max="1" hidden></progress>
+      <div class="capacity" id="capacity"></div>
+    </section>
+  </div>
+
+  <!-- MUTES -->
+  <div class="view" id="view-mutes">
+    <div class="notice">
+      Reference only. The card has no SysEx message for mute-group assignment yet, so this shows the
+      built-in mapping rather than something you can change here. Toggling groups live on the card works
+      as described below.
+    </div>
+    <div class="ref-grid" id="mute-ref"></div>
+  </div>
+
+  <!-- FX -->
+  <div class="view" id="view-fx">
+    <div class="notice">
+      Reference only. Effects are performed on the card, not configured here — this is the gesture map.
+      Hold a shift button and tap another to fire an effect; hold the shift alone and turn Main to draw
+      that family's depth curve.
+    </div>
+    <div class="ref-grid" id="fx-ref"></div>
+  </div>
+
+  <!-- PATTERNS -->
+  <div class="view" id="view-patterns">
+    <div class="notice">
+      Reference only. Pattern transfer needs its own SysEx messages, which do not exist yet — a pattern is
+      a bare event list under 2KB with no audio attached, so it is the natural next thing to add here.
+      Loop length and the record grid are likewise card-side for now.
+    </div>
+    <div class="ref-grid" id="pattern-ref"></div>
+  </div>
+
+  <!-- I/O -->
+  <div class="view" id="view-io">
+    <div id="io-content">
+      <p>Audio out 1 &amp; 2 &mdash; <span class="io-desc">the drum bus, mono, both jacks identical</span></p>
+      <hr>
+      <p>Pulse out 1 &mdash; <span class="io-desc">gate, one pulse per hit</span></p>
+      <hr>
+      <p>Pulse out 2 &mdash; <span class="io-desc">click, one pulse per beat</span></p>
+      <hr>
+      <p>CV out 1 &amp; 2 &mdash; <span class="io-desc">unassigned</span></p>
+      <hr>
+      <p>CV in 1 &mdash; <span class="io-desc">Four Voltages output 1 &mdash; the instrument itself. Calibrated on an alt-boot and saved to flash.</span></p>
+      <hr>
+      <p>Pulse in 1 &mdash; <span class="io-desc">external clock, one edge per beat</span></p>
+      <hr>
+      <p>Main / X / Y &mdash; <span class="io-desc">DJ filter (or FX depth) / tempo 40&ndash;240bpm / kit character</span></p>
+    </div>
+  </div>
+
+</main>
+
+<footer>NIBBLE-KO &middot; twelve-voice percussion looper &middot; Music Thing Modular Workshop System</footer>
+
+<div class="modal" id="help-modal">
+  <div class="dialog">
+    <h3>NIBBLE-KO Setup</h3>
+
+    <h4>Connecting</h4>
+    <ul>
+      <li>On the card: hold the switch <strong>Down</strong> and press <strong>B + D</strong> together</li>
+      <li>All four pads glow slowly &mdash; the card is now on USB and silent</li>
+      <li>Click <code>Connect USB</code> and allow MIDI access when the browser asks</li>
+    </ul>
+
+    <h4>Assigning voices</h4>
+    <ul>
+      <li>Pick a bank entry to make a slot play that sample, or <code>Synth</code> for the built-in voice</li>
+      <li>This applies <strong>immediately</strong> and does not reboot the card</li>
+      <li>It is not saved yet: a power cycle restores the factory assignment</li>
+    </ul>
+
+    <h4>Uploading samples</h4>
+    <ul>
+      <li>Click <code>&uarr;</code> on a slot and choose a WAV &mdash; any rate or channel count</li>
+      <li>It is converted to 8-bit mono 48kHz, trimmed, loudness-matched and dithered, exactly as
+          <code>tools/importwav.py</code> does for baked samples</li>
+      <li>Click <code>Send Uploads to Card</code>. The card goes silent, writes flash, and restarts</li>
+      <li>Uploads <strong>append</strong>: sending one slot leaves the other eleven alone</li>
+    </ul>
+
+    <h4>Getting back to playing</h4>
+    <ul>
+      <li>An upload reboots the card by itself</li>
+      <li>Otherwise just power-cycle it &mdash; the saved calibration survives, so it comes straight back up playable</li>
+    </ul>
+
+    <button class="dialog-close" id="help-close">Close</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// --- protocol (mirrors webui.h) ---------------------------------------------
+
+const MFR = 0x7D;
+const SR  = 48000;
+const NUM_VOICES = 12;
+const SOURCE_SYNTH = 0x7F;   // kSourceSynth: 7-bit, so NOT 0xFF
+
+const MSG = {
+  HELLO: 0x01, INFO: 0x02,
+  UP_BEGIN: 0x10, UP_SLOT: 0x11, UP_CHUNK: 0x12, UP_SLOTEND: 0x13,
+  UP_END: 0x14, ACK: 0x15, ERR: 0x16, UP_ALIAS: 0x17, UP_DROP: 0x18,
+  UP_KEEP: 0x1A,
+  ERASE: 0x20, PLAY: 0x21, CLEARSLOT: 0x22,
+  SLOTS: 0x23, SLOTINFO: 0x24, SLOTDET: 0x25, SET_SOURCE: 0x26,
+};
+
+// Voice names, matching drums.cpp's kit order. Cosmetic: the card addresses
+// slots by index and does not send names.
+const VOICE_NAMES = [
+  "kick", "kick deep", "snare", "snare snappy",
+  "closed hat", "hi-hat metallic", "open hi-hat", "crash",
+  "cowbell", "tom 1", "tom 2", "clap",
+];
+
+// Baked bank entries, matching samples_default.h's import order.
+const BANK_NAMES = ["kick", "snare", "closed hat", "open hat", "clap"];
+
+const state = {
+  midiOut: null, midiIn: null, info: null,
+  sources: new Array(NUM_VOICES).fill(SOURCE_SYNTH),  // live, from the card
+  userLoaded: new Array(NUM_VOICES).fill(false),
+  pending: new Map(),   // voice -> {name, audio} staged for upload
+};
+
+// --- audio conversion (mirrors tools/importwav.py) ---------------------------
+
+async function decodeWav(file) {
+  const buf = await file.arrayBuffer();
+  const ctx = new OfflineAudioContext(1, 1, SR);
+  const audio = await ctx.decodeAudioData(buf);
+
+  // Sum to mono.
+  const n = audio.length;
+  const out = new Float32Array(n);
+  for (let c = 0; c < audio.numberOfChannels; c++) {
+    const d = audio.getChannelData(c);
+    for (let i = 0; i < n; i++) out[i] += d[i];
+  }
+  if (audio.numberOfChannels > 1)
+    for (let i = 0; i < n; i++) out[i] /= audio.numberOfChannels;
+
+  if (audio.sampleRate === SR) return out;
+  const ratio = audio.sampleRate / SR;
+  const m = Math.floor(n / ratio);
+  const rs = new Float32Array(m);
+  for (let i = 0; i < m; i++) {
+    const x = i * ratio, j = x | 0, f = x - j;
+    rs[i] = out[j] + ((out[j + 1] || 0) - out[j]) * f;
+  }
+  return rs;
+}
+
+function trim(d, floor = 0.004) {
+  let a = 0, b = d.length;
+  while (a < b && Math.abs(d[a]) < floor) a++;
+  while (b > a && Math.abs(d[b - 1]) < floor) b--;
+  a = Math.max(0, a - 48);            // keep 1ms of pre-roll so attacks survive
+  return d.subarray(a, Math.max(b, a + 1));
+}
+
+function rms(d) {
+  if (!d.length) return 0;
+  let s = 0;
+  for (let i = 0; i < d.length; i++) s += d[i] * d[i];
+  return Math.sqrt(s / d.length);
+}
+
+// Match PERCEIVED loudness, then soft-limit. Peak normalisation does not work
+// here: a peak is usually one transient, so two files normalised to the same
+// peak can still sound nothing alike.
+function loudnessMatch(d, target, ceiling = 0.94) {
+  const r = rms(d);
+  if (r < 1e-9) return d;
+  const g = target / r, knee = ceiling * 0.7;
+  const out = new Float32Array(d.length);
+  for (let i = 0; i < d.length; i++) {
+    let v = d[i] * g, a = Math.abs(v);
+    if (a > knee) {
+      const over = (a - knee) / (1 - knee);
+      a = knee + (ceiling - knee) * (over / (1 + over));
+      v = v >= 0 ? a : -a;
+    }
+    out[i] = v;
+  }
+  return out;
+}
+
+function fadeOut(d, ms = 4) {
+  const n = Math.min((SR * ms / 1000) | 0, d.length);
+  for (let i = 0; i < n; i++) d[d.length - n + i] *= 1 - i / n;
+  return d;
+}
+
+function toBytes(d) {
+  // TPDF dither, matching tools/importwav.py. Without it the quantisation error
+  // correlates with the signal, which is what makes 8-bit read as grit riding
+  // on a decaying tail rather than as hiss.
+  const out = new Uint8Array(d.length);
+  for (let i = 0; i < d.length; i++) {
+    const dither = Math.random() + Math.random() - 1.0;
+    const s = Math.floor(d[i] * 127 + dither + 0.5);
+    out[i] = (s < -128 ? -128 : s > 127 ? 127 : s) & 0xFF;
+  }
+  return out;
+}
+
+// --- 7-bit SysEx encoding (mirrors Encode7bit in webui.cpp) ------------------
+
+function encode7bit(src) {
+  const groups = Math.ceil(src.length / 7);
+  const out = new Uint8Array(groups * 8);
+  let o = 0;
+  for (let i = 0; i < src.length; i += 7) {
+    const n = Math.min(7, src.length - i);
+    let high = 0;
+    for (let k = 0; k < n; k++) if (src[i + k] & 0x80) high |= 1 << k;
+    out[o++] = high;
+    for (let k = 0; k < n; k++) out[o++] = src[i + k] & 0x7F;
+  }
+  return out.subarray(0, o);
+}
+
+// --- MIDI -------------------------------------------------------------------
+
+function setStatus(msg, cls = "") {
+  const el = document.getElementById("status");
+  el.textContent = msg;
+  el.className = cls;
+}
+
+function send(payload) {
+  const msg = new Uint8Array(payload.length + 3);
+  msg[0] = 0xF0; msg[1] = MFR;
+  msg.set(payload, 2);
+  msg[msg.length - 1] = 0xF7;
+  state.midiOut.send(msg);
+}
+
+// Replies are collected by ONE permanent handler and queued, rather than by a
+// handler installed per wait. Installing per wait drops any reply that arrives
+// BETWEEN waits, which puts every later wait one message behind — it surfaces
+// as "card did not respond" to a message the card in fact answered.
+const rxQueue = [];
+let rxWaiter = null;
+
+function attachMidiIn(port) {
+  rxQueue.length = 0;
+  rxWaiter = null;
+  port.onmidimessage = (e) => {
+    const d = e.data;
+    if (d[0] !== 0xF0 || d[1] !== MFR) return;
+    if (rxWaiter) { const w = rxWaiter; rxWaiter = null; w(d); }
+    else rxQueue.push(d);
+  };
+}
+
+function waitAck(timeoutMs = 4000) {
+  return new Promise((resolve, reject) => {
+    const deliver = (d) => {
+      if (d[2] === MSG.ERR) reject(new Error("card reported error " + d[3]));
+      else resolve(d);
+    };
+    if (rxQueue.length) { deliver(rxQueue.shift()); return; }
+    const t = setTimeout(() => {
+      if (rxWaiter === handler) rxWaiter = null;
+      reject(new Error("card did not respond"));
+    }, timeoutMs);
+    const handler = (d) => { clearTimeout(t); deliver(d); };
+    rxWaiter = handler;
+  });
+}
+
+const DEVICE_RE = /nibble|workshop|pico/i;
+
+async function connect() {
+  let midi;
+  try {
+    midi = await navigator.requestMIDIAccess({ sysex: true });
+  } catch (e) {
+    setStatus("MIDI access was refused. Reload and allow it, or use Chrome/Edge.", "err");
+    return;
+  }
+
+  state.midiOut = null;
+  state.midiIn = null;
+  for (const o of midi.outputs.values()) if (DEVICE_RE.test(o.name)) state.midiOut = o;
+  for (const i of midi.inputs.values())  if (DEVICE_RE.test(i.name)) state.midiIn = i;
+
+  if (!state.midiOut || !state.midiIn) {
+    // The card only enumerates once it is in WebUI mode, so "not found" is far
+    // more likely to mean "not in that mode yet" than "unplugged". Watch for it
+    // appearing rather than making the user press Connect again.
+    setStatus("Card not found — on the card, hold the switch Down and press B + D. Waiting…", "err");
+    midi.onstatechange = (e) => {
+      if (e.port && e.port.state === "connected" && DEVICE_RE.test(e.port.name)) {
+        midi.onstatechange = null;
+        connect();
+      }
+    };
+    return;
+  }
+
+  attachMidiIn(state.midiIn);
+  navigator.permissions && midi.addEventListener &&
+    midi.addEventListener("statechange", (e) => {
+      if (e.port && e.port.state === "disconnected" && e.port === state.midiIn)
+        disconnected();
+    });
+
+  send([MSG.HELLO]);
+  const info = await waitAck(1500).catch(() => null);
+  if (!info || info[2] !== MSG.INFO || info.length < 16) {
+    setStatus("The card answered, but not with something this page understands. " +
+              "Firmware and page may be different versions.", "err");
+    return;
+  }
+
+  // info[] is raw SysEx (F0 7D <payload> F7), so payload[k] is info[k+2].
+  // The full map, matching MSG_HELLO's reply in webui.cpp:
+  //   [2] MSG_INFO   [3] version    [4] user samples?   [5] baked present?
+  //   [6..8] per-upload cap         [9] voice count
+  //   [10..12] bytes used           [13..15] region size
+  const cap   = (info[6]  << 14) | (info[7]  << 7) | info[8];
+  const used  = (info[10] << 14) | (info[11] << 7) | info[12];
+  const total = (info[13] << 14) | (info[14] << 7) | info[15];
+  state.info = { user: info[4] === 1, cap, used, total };
+
+  await refreshSlots();
+
+  setStatus(state.info.user ? "Connected. Uploaded samples in use."
+                            : "Connected. Using built-in samples.", "ok");
+  document.getElementById("connect-btn").textContent = "Disconnect";
+  document.getElementById("connect-btn").className = "connected";
+  document.getElementById("revert-btn").disabled = !state.info.user;
+  updateCapacity();
+  renderVoices();
+}
+
+/// Ask the card what each voice is currently pointed at, and which slots hold
+/// uploaded audio. This is what makes the page show the CARD's state rather
+/// than a guess seeded from the build-time defaults.
+async function refreshSlots() {
+  send([MSG.SLOTS]);
+  const sl = await waitAck(1500).catch(() => null);
+  if (!sl || sl[2] !== MSG.SLOTS) return;
+
+  const bits = sl[3] | (sl[4] << 7);
+  for (let v = 0; v < NUM_VOICES; v++) {
+    state.userLoaded[v] = (bits & (1 << v)) !== 0;
+    state.sources[v] = sl[5 + v];
+  }
+}
+
+function disconnected() {
+  state.midiOut = null;
+  state.midiIn = null;
+  state.info = null;
+  setStatus("Disconnected.");
+  const btn = document.getElementById("connect-btn");
+  btn.textContent = "Connect USB";
+  btn.className = "";
+  document.getElementById("send-btn").disabled = true;
+  document.getElementById("revert-btn").disabled = true;
+  document.getElementById("capacity").textContent = "";
+  renderVoices();
+}
+
+const kb = (n) => `${Math.round(n / 1024)} KB`;
+
+function updateCapacity() {
+  const el = document.getElementById("capacity");
+  if (!state.info) { el.textContent = ""; return; }
+  const free = Math.max(0, state.info.total - state.info.used);
+  el.textContent = `${kb(state.info.used)} used, ${kb(free)} free · ` +
+                   `up to ${kb(state.info.cap)} per upload`;
+}
+
+// --- Kit tab ----------------------------------------------------------------
+
+function renderVoices() {
+  const list = document.getElementById("voice-list");
+  const connected = !!state.midiOut;
+  list.innerHTML = "";
+
+  for (let v = 0; v < NUM_VOICES; v++) {
+    const tile = document.createElement("div");
+    tile.className = "voice-tile";
+
+    const src = state.sources[v];
+    const isSample = src !== SOURCE_SYNTH;
+
+    let opts = `<option value="${SOURCE_SYNTH}"${!isSample ? " selected" : ""}>Synth</option>`;
+    for (let b = 0; b < BANK_NAMES.length; b++)
+      opts += `<option value="${b}"${src === b ? " selected" : ""}>${BANK_NAMES[b]}</option>`;
+
+    const staged = state.pending.get(v);
+    const fileLabel = staged ? staged.name
+                     : state.userLoaded[v] ? "uploaded" : "";
+
+    tile.innerHTML =
+      `<span class="voice-idx mono">${String(v).padStart(2, "0")}</span>` +
+      `<span class="voice-name">${VOICE_NAMES[v]}</span>` +
+      `<span class="voice-file">${fileLabel}</span>` +
+      `<select data-v="${v}" class="${isSample ? "is-sample" : ""}"${connected ? "" : " disabled"}>${opts}</select>` +
+      `<button class="upload-btn" data-v="${v}" title="Upload a WAV"${connected ? "" : " disabled"}>&uarr;</button>`;
+    list.appendChild(tile);
+  }
+
+  document.getElementById("send-btn").disabled = !connected || state.pending.size === 0;
+}
+
+document.getElementById("voice-list").addEventListener("change", async (e) => {
+  const sel = e.target.closest("select");
+  if (!sel || !state.midiOut) return;
+  const v = Number(sel.dataset.v);
+  const bank = Number(sel.value);
+
+  send([MSG.SET_SOURCE, v, bank]);
+  const ack = await waitAck(1500).catch(() => null);
+  if (!ack) { setStatus("The card did not confirm that change.", "err"); return; }
+
+  state.sources[v] = bank;
+  setStatus(bank === SOURCE_SYNTH
+    ? `${VOICE_NAMES[v]} is now synthesised.`
+    : `${VOICE_NAMES[v]} now plays ${BANK_NAMES[bank]}.`, "ok");
+  renderVoices();
+});
+
+document.getElementById("voice-list").addEventListener("click", (e) => {
+  const btn = e.target.closest(".upload-btn");
+  if (!btn || !state.midiOut) return;
+  const v = Number(btn.dataset.v);
+
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "audio/*,.wav";
+  input.addEventListener("change", async () => {
+    const file = input.files && input.files[0];
+    if (!file) return;
+    try {
+      const audio = trim(await decodeWav(file));
+      state.pending.set(v, { name: file.name, audio });
+      setStatus(`${file.name} ready for ${VOICE_NAMES[v]}. Click Send when you have staged everything.`);
+      renderVoices();
+    } catch (err) {
+      setStatus(`Could not read ${file.name} — is it really an audio file?`, "err");
+    }
+  });
+  input.click();
+});
+
+document.getElementById("send-btn").addEventListener("click", async () => {
+  if (!state.midiOut || state.pending.size === 0) return;
+
+  // One loudness target across everything staged, so slots do not jump in
+  // level relative to each other. 0.12 matches tools/importwav.py: it is set
+  // BEFORE the 8-bit conversion, so it decides how many of the eight bits
+  // actually get used.
+  const entries = [...state.pending.entries()];
+  const levels = entries.map(([, p]) => rms(p.audio)).sort((a, b) => a - b);
+  const target = Math.max(levels[levels.length >> 1] || 0.12, 0.12);
+
+  const prepared = entries.map(([v, p]) => ({
+    voice: v,
+    bytes: toBytes(fadeOut(loudnessMatch(p.audio, target))),
+  }));
+  const total = prepared.reduce((n, p) => n + p.bytes.length, 0);
+
+  // Two different limits, and which one you hit matters. The per-upload cap is
+  // the card's RAM staging buffer, not how much it can store — uploads append,
+  // so the same audio usually fits across two passes.
+  if (total > state.info.cap) {
+    setStatus(`${kb(total)} is more than the ${kb(state.info.cap)} the card takes in ONE upload. ` +
+              `Send some of these now and the rest in a second pass — uploads add to what is there.`, "err");
+    return;
+  }
+  const free = Math.max(0, state.info.total - state.info.used);
+  if (total > free) {
+    setStatus(`${kb(total)} will not fit in the ${kb(free)} left. ` +
+              `Use "Revert to Built-in Samples" to clear the card and start again.`, "err");
+    return;
+  }
+
+  const prog = document.getElementById("prog");
+  prog.hidden = false; prog.value = 0;
+  document.getElementById("send-btn").disabled = true;
+  document.getElementById("revert-btn").disabled = true;
+  setStatus("Sending… the card restarts into your samples when this finishes.");
+
+  try {
+    send([MSG.UP_BEGIN, (total >> 14) & 0x7F, (total >> 7) & 0x7F, total & 0x7F]);
+    await waitAck(30000);
+
+    let done = 0;
+    for (const p of prepared) {
+      send([MSG.UP_SLOT, p.voice]);
+      await waitAck();
+
+      // 336 = 48 groups of 7, encoding to 384 bytes — comfortable over USB.
+      const CHUNK = 336;
+      for (let off = 0; off < p.bytes.length; off += CHUNK) {
+        const enc = encode7bit(p.bytes.subarray(off, off + CHUNK));
+        const msg = new Uint8Array(enc.length + 1);
+        msg[0] = MSG.UP_CHUNK; msg.set(enc, 1);
+        send(msg);
+        await waitAck();
+        done += Math.min(CHUNK, p.bytes.length - off);
+        prog.value = done / total;
+        setStatus(`Uploading ${VOICE_NAMES[p.voice]}… ${((done / total) * 100) | 0}%`);
+      }
+      send([MSG.UP_SLOTEND]);
+      await waitAck();
+    }
+
+    // The card acks this, then goes silent and writes flash. The disconnect
+    // that follows IS success — there is nothing left to talk to.
+    send([MSG.UP_END]);
+    await waitAck(10000).catch(() => null);
+
+    prog.hidden = true;
+    state.pending.clear();
+    setStatus("Sent. The card is writing flash and restarting — it will disappear from USB.", "ok");
+    renderVoices();
+  } catch (err) {
+    prog.hidden = true;
+    document.getElementById("send-btn").disabled = false;
+    document.getElementById("revert-btn").disabled = false;
+    setStatus(`Upload failed: ${err.message}. Nothing was written — you can try again.`, "err");
+  }
+});
+
+document.getElementById("revert-btn").addEventListener("click", async () => {
+  if (!state.midiOut) return;
+  setStatus("Clearing uploaded samples — the card will restart.");
+  send([MSG.ERASE]);
+  await waitAck(10000).catch(() => null);
+  setStatus("Cleared. The card is restarting on its built-in samples.", "ok");
+});
+
+document.getElementById("connect-btn").addEventListener("click", () => {
+  if (state.midiOut) {
+    // Ask the card to leave USB mode and come back up playing.
+    send([MSG.PLAY]);
+    disconnected();
+  } else {
+    connect();
+  }
+});
+
+// --- Reference tabs ---------------------------------------------------------
+
+const MUTE_GROUPS = [
+  { name: "Group 1", key: "hold B + tap A", voices: [0, 1, 2, 3] },
+  { name: "Group 2", key: "hold B + tap C", voices: [4, 5, 6, 7] },
+  { name: "Group 3", key: "hold B + tap D", voices: [8, 9, 10, 11] },
+];
+
+const FX_FAMILIES = [
+  { shift: "A", label: "Filters",     fx: ["Low-pass", "High-pass", "Band sweep"] },
+  { shift: "B", label: "Destruction", fx: ["Bit-crush", "Decimate", "Wavefold"] },
+  { shift: "C", label: "Rhythmic",    fx: ["Stutter", "Flam", "Gate"] },
+  { shift: "D", label: "Transport",   fx: ["Reverse", "Tape-stop", "Silence"] },
+];
+
+function renderReference() {
+  const mutes = document.getElementById("mute-ref");
+  MUTE_GROUPS.forEach((g) => {
+    const card = document.createElement("div");
+    card.className = "ref-card";
+    card.innerHTML = `<h3>${g.name}</h3><div class="ref-sub">${g.key}</div>` +
+      g.voices.map(v => `<div class="ref-row"><span>${VOICE_NAMES[v]}</span></div>`).join("");
+    mutes.appendChild(card);
+  });
+
+  const fx = document.getElementById("fx-ref");
+  FX_FAMILIES.forEach((f) => {
+    const taps = ["A", "B", "C", "D"].filter(k => k !== f.shift);
+    const card = document.createElement("div");
+    card.className = "ref-card";
+    card.innerHTML = `<h3>${f.label}</h3><div class="ref-sub">hold ${f.shift}</div>` +
+      f.fx.map((name, i) =>
+        `<div class="ref-row"><span class="ref-key">${f.shift} + ${taps[i]}</span><span>${name}</span></div>`
+      ).join("");
+    fx.appendChild(card);
+  });
+
+  const pat = document.getElementById("pattern-ref");
+  pat.innerHTML =
+    `<div class="ref-card"><h3>Pattern slots</h3><div class="ref-sub">three, on A / B / C</div>` +
+    `<div class="ref-row"><span class="ref-key">hold D + tap</span><span>recall that slot instantly</span></div>` +
+    `<div class="ref-row"><span class="ref-key">switch Up + tap</span><span>store the live loop into it</span></div>` +
+    `</div>` +
+    `<div class="ref-card"><h3>Loop</h3><div class="ref-sub">card-side settings</div>` +
+    `<div class="ref-row"><span class="ref-key">length</span><span>4 bars, fixed for now</span></div>` +
+    `<div class="ref-row"><span class="ref-key">switch + A+C</span><span>record grid: 1/16 → 1/12 → 1/8</span></div>` +
+    `<div class="ref-row"><span class="ref-key">switch + A+B</span><span>undo the last pass</span></div>` +
+    `</div>`;
+}
+
+// --- Tabs and modal ---------------------------------------------------------
+
+const tabs = document.querySelectorAll(".tab-btn");
+tabs.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    tabs.forEach(b => b.classList.remove("active"));
+    document.querySelectorAll(".view").forEach(v => v.classList.remove("active"));
+    btn.classList.add("active");
+    document.getElementById("view-" + btn.dataset.tab).classList.add("active");
+  });
+});
+
+const helpModal = document.getElementById("help-modal");
+document.getElementById("help-btn").addEventListener("click", () => helpModal.classList.add("visible"));
+document.getElementById("help-close").addEventListener("click", () => helpModal.classList.remove("visible"));
+helpModal.addEventListener("click", (e) => { if (e.target === helpModal) helpModal.classList.remove("visible"); });
+
+// --- Boot -------------------------------------------------------------------
+
+if (!navigator.requestMIDIAccess) {
+  setStatus("This browser has no WebMIDI. Use Chrome or Edge.", "err");
+  document.getElementById("connect-btn").disabled = true;
+}
+
+renderReference();
+renderVoices();
+</script>
+</body>
+</html>

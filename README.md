@@ -294,14 +294,33 @@ That falls out of NIBBLE's decision to record the *voice* rather than the
 *gesture*, which it made for an unrelated reason: so re-arranging the gesture
 map couldn't silently change an old loop.
 
+## The browser setup tool
+
+Hold the switch **Down** and press **B + D**: the card goes silent, all four
+pads glow, and it appears over USB as a MIDI device. Open [`web/index.html`](web/index.html)
+in Chrome or Edge and click Connect.
+
+From there you can point any of the twelve voices at a different sample (or
+back to its synthesised voice) and hear it immediately, and upload your own
+WAVs — converted in the browser to the same 8-bit 48kHz format the baked
+samples use, then written to flash. See [`web/README.md`](web/README.md).
+
+Uploads **append**, so sending one voice leaves the other eleven alone, and
+an upload restarts the card when it lands.
+
+> **Written but not yet played.** The USB path builds clean and is ported
+> step-for-step from BioMimicry's working version, but it has not been run on
+> hardware yet.
+
 ## What isn't done
 
-- **No browser sample manager.** The USB/SysEx layer is a stub, so samples are
-  baked at build time rather than uploaded.
-- **Patterns are RAM only** — they do not survive a power cycle. Getting
-  them in and out over the web app is the next natural step.
-- **Mute groups are hardcoded** three ways by voice index, pending the WebUI
-  that would assign them.
+- **Only the Kit is configurable from the browser.** Mute groups, patterns
+  and loop settings need SysEx messages that do not exist yet, so those tabs
+  are reference displays. Pattern transfer is the obvious next one.
+- **Voice assignment isn't saved.** Re-pointing a voice lasts until the card
+  reboots, then reverts to the factory kit. Uploaded audio *is* saved.
+- **Patterns are RAM only** — they do not survive a power cycle.
+- **Mute groups are hardcoded** three ways by voice index.
 
 ## Credits
 

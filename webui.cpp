@@ -215,6 +215,53 @@ void __not_in_flash_func(WebUI::Task)()
 		txPending_ = false;
 		tud_task();
 	}
+
+	// One library entry per pass, for the same reason: the whole burst does
+	// not fit the TX FIFO, and it cannot be pumped from inside HandleSysex().
+	// Here it is safe — the packet loop above has finished, so there is no
+	// rx_ state to corrupt.
+	if (libSending_)
+	{
+		SendNextLibraryEntry();
+		tud_task();
+	}
+}
+
+/// Send ONE MSG_LIBDET, or the terminator once the library is exhausted.
+///
+/// Driven from Task() rather than from the MSG_LIBRARY handler — see the
+/// comment there. Sending one per pass keeps the TX FIFO from overflowing
+/// however many entries the card holds.
+void __not_in_flash_func(WebUI::SendNextLibraryEntry)()
+{
+	const UserSampleHeader *h = UserHeader();
+	const bool have = HaveUserSamples();
+
+	while (libCursor_ < kMaxUserSamples)
+	{
+		const int e = libCursor_++;
+		if (!have || h->size[e] == 0) continue;
+
+		uint8_t d[5 + kNameLen];
+		uint32_t o = 0;
+		d[o++] = MSG_LIBDET;
+		d[o++] = static_cast<uint8_t>(e);
+		d[o++] = static_cast<uint8_t>((h->size[e] >> 14) & 0x7F);
+		d[o++] = static_cast<uint8_t>((h->size[e] >> 7)  & 0x7F);
+		d[o++] = static_cast<uint8_t>( h->size[e]        & 0x7F);
+		// Name, ASCII, NUL-padded. Masked to 7 bits because SysEx cannot carry
+		// anything wider — a name is only ever typed into a browser, so this
+		// costs nothing real.
+		for (int i = 0; i < kNameLen; i++)
+			d[o++] = static_cast<uint8_t>(h->name[e][i] & 0x7F);
+		Send(d, o);
+		return;
+	}
+
+	// Exhausted: terminate the burst so the browser stops waiting.
+	uint8_t end[2] = { MSG_LIBDET, 0x7F };
+	Send(end, 2);
+	libSending_ = false;
 }
 
 void __not_in_flash_func(WebUI::Send)(const uint8_t *payload, uint32_t len)
@@ -613,40 +660,24 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 		// entries would otherwise be 32 round trips, and the browser's ack
 		// queue already copes with a burst (that is what it is for).
 		//
-		// PUMPED BETWEEN SENDS, and that is load-bearing rather than tidy.
-		// Send() only fills TinyUSB's TX FIFO, which is 256 bytes at full
-		// speed; a full library is 32 x 24 = 768, so writing the lot before
-		// letting tud_task() drain it would silently drop two thirds of the
-		// entries — and silently, because tud_midi_stream_write reports
-		// nothing when the buffer is full.
+		// DEFERRED, not sent from here, and that is the whole point.
 		//
-		// Re-entering tud_task() here is safe in a way it is NOT inside
-		// Send(): this is a burst of replies with no incoming message being
-		// parsed around it, so there is no rx_ state to corrupt.
-		if (HaveUserSamples())
-		{
-			const UserSampleHeader *h = UserHeader();
-			for (int e = 0; e < kMaxUserSamples; e++)
-			{
-				if (h->size[e] == 0) continue;
-				uint8_t d[5 + kNameLen];
-				uint32_t o = 0;
-				d[o++] = MSG_LIBDET;
-				d[o++] = static_cast<uint8_t>(e);
-				d[o++] = static_cast<uint8_t>((h->size[e] >> 14) & 0x7F);
-				d[o++] = static_cast<uint8_t>((h->size[e] >> 7)  & 0x7F);
-				d[o++] = static_cast<uint8_t>( h->size[e]        & 0x7F);
-				// Name, ASCII, NUL-padded. Masked to 7 bits because SysEx
-				// cannot carry anything wider — a name is only ever typed
-				// into a browser, so this costs nothing real.
-				for (int i = 0; i < kNameLen; i++)
-					d[o++] = static_cast<uint8_t>(h->name[e][i] & 0x7F);
-				Send(d, o);
-				tud_task();
-			}
-		}
-		uint8_t end[2] = { MSG_LIBDET, 0x7F };
-		Send(end, 2);
+		// Two constraints pull in opposite directions. The TX FIFO is 256
+		// bytes at full speed and a full library is 32 x 24 = 768, so the
+		// replies cannot all be queued at once — tud_midi_stream_write
+		// silently drops what will not fit. But tud_task() CANNOT be called
+		// from here either: HandleSysex() runs inside Task()'s packet loop, so
+		// a nested tud_task() re-enters that loop and corrupts rx_ half way
+		// through parsing this very request. Send()'s comment says exactly
+		// that, and an earlier version of this code called tud_task() anyway —
+		// which is why an upload could land its audio and then report an empty
+		// library.
+		//
+		// So the burst is handed to Task() instead: it remembers where it got
+		// to and sends the next entry each time round, with a real tud_task()
+		// in between. See libCursor_.
+		libCursor_ = 0;
+		libSending_ = true;
 		break;
 	}
 

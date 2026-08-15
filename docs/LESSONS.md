@@ -314,6 +314,23 @@ The tell is that the reasoning was about *when the code calls something*,
 when the hazard is *when the hardware interrupts it*. If a justification for
 skipping one of these five steps talks only about control flow, it is wrong.
 
+**The same mistake, in the other direction: never call `tud_task()` from
+inside a SysEx handler.** `HandleSysex()` runs *inside* `Task()`'s packet
+loop, so a nested `tud_task()` re-enters that loop and corrupts `rx_`/`rxLen_`
+half way through parsing the message being replied to. `Send()`'s comment
+says exactly this — and NIBBLE-KO then added a `tud_task()` to the middle of
+its library-listing handler anyway, justified with "this is a burst of
+replies with no incoming message being parsed around it". There is one: the
+request that reached the handler.
+
+On the bench that read as an upload landing its audio (space consumed) and
+then reporting an **empty library** — the corrupted parse lost the reply
+stream. It looks like a flash bug and is not.
+
+Any reply too big for the 256-byte TX FIFO therefore has to be **deferred to
+`Task()`**, sent a piece at a time with a real `tud_task()` between pieces,
+rather than pumped from the handler. See `SendNextLibraryEntry()`.
+
 Once `USBCTRL_IRQ` is masked, TinyUSB's state is inconsistent anyway — the
 host has seen the device stop responding mid-transfer — so **rebooting is the
 honest recovery, not a convenience**. Every flash write on this card ends in

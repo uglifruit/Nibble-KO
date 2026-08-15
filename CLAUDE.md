@@ -84,6 +84,12 @@ Identical platform constraints to NIBBLE and WorkshopBio — see
   `docs/LESSONS.md` and `webui.cpp`'s `CommitHeaderAndReboot()`. If you find
   yourself reasoning "the handler is not reached during the erase", stop:
   interrupts are not control flow.
+- **Never call `tud_task()` from inside a SysEx handler.** `HandleSysex()`
+  runs inside `Task()`'s packet loop, so a nested call re-enters it and
+  corrupts the parser mid-message. A reply too big for the 256-byte TX FIFO
+  must be deferred to `Task()` and drip-fed instead — see
+  `SendNextLibraryEntry()`. Doing this wrong made an upload land its audio
+  and then report an empty library, which looks like a flash bug and is not.
 - **USB runs on core 1 and is MODAL.** TinyUSB is not initialised, and the
   card does not enumerate, until switch+B+D sets `WebUI::usbMode` — which is
   what keeps `USBCTRL_IRQ` (flash-resident) off the audio path while the card

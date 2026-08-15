@@ -163,6 +163,11 @@ private:
 	/// the definition for why the "live" version of this hung the card.
 	void CommitHeaderAndReboot();
 
+	/// Send one MSG_LIBDET per call, driven from Task(). The library reply is
+	/// a burst too big for the TX FIFO, and it cannot be pumped from inside
+	/// HandleSysex() without corrupting the parser — see MSG_LIBRARY.
+	void SendNextLibraryEntry();
+
 	bool     uploading_ = false;
 	uint8_t  slotEntry_ = 0;    // library entry currently being received
 	uint32_t writeOff_ = 0;     // next byte offset within the data area
@@ -192,6 +197,10 @@ private:
 	uint32_t rxLen_ = 0;
 	bool     inSysex_ = false;
 	bool     txPending_ = false;
+
+	// The library reply, sent one entry per Task() pass.
+	uint8_t  libCursor_ = 0;
+	bool     libSending_ = false;
 };
 
 } // namespace nko

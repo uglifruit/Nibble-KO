@@ -91,6 +91,10 @@ did not need to:
 
 ## Provenance
 
+The visual design — dark theme, EB Garamond, the tab/panel language — follows
+[Johan Eklund's Resonator](https://johaneklund.io/resonator/), the web UI for
+his own Workshop System card.
+
 The connection handling, ack queueing and upload sequence are ported from
 `../../WorkshopBio/web/index.html`, whose comments record several bugs worth
 not repeating — in particular the ack queue, which exists because installing

@@ -9,7 +9,12 @@ License: CC-BY-4.0
 repository: https://github.com/uglifruit/Nibble-KO
 Editor: web
 date-created: 2026-08-09
-date-updated: 2026-08-11
+date-updated: 2026-08-16
+
+# The browser setup tool's visual design follows Johan Eklund's Resonator
+# (https://johaneklund.io/resonator/), and its USB connection/upload logic is
+# ported from WorkshopBio's web/index.html (also Andy Jenkinson). See
+# README.md's Credits section and web/README.md for the fuller detail.
 
 contact:
   social:

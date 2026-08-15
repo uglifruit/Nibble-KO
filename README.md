@@ -326,6 +326,14 @@ samples use. See [`web/README.md`](web/README.md).
 The baked drum samples are Cheetah SpecDrum ROMs (1986), from
 <https://samples.kb6.de/>. See [samples/README.md](samples/README.md).
 
+The browser setup tool's look — dark theme, EB Garamond, the whole visual
+language — follows [Johan Eklund's Resonator](https://johaneklund.io/resonator/)
+web UI for his own Workshop System card. Its connection handling, ack
+queueing and upload sequence are ported from `WorkshopBio/web/index.html`
+(Andy Jenkinson), whose hard-won comments this card's `docs/LESSONS.md` leans
+on throughout — see that file for the fuller lineage from NIBBLE and
+BioMimicry.
+
 ## Repo
 
 `https://github.com/uglifruit/Nibble-KO` (public).

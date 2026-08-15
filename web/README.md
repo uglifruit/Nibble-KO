@@ -52,6 +52,20 @@ compacts the region, so the Samples tab reports live audio and the append
 watermark separately — "3 samples totalling 40KB, 900KB consumed" is a real
 state, and only Erase All resets it.
 
+## Every write reboots the card
+
+Uploading, saving the kit, renaming, deleting and erasing all write flash,
+and writing flash means masking USB — after which TinyUSB cannot be resumed.
+So each of those ends with the card restarting, dropping off USB, and coming
+back up **playing** rather than in WebUI mode. To carry on: press
+switch+B+D again and click Connect.
+
+This is not a limitation of the browser tool but of the hardware; the
+reasoning is in `docs/LESSONS.md` and `webui.cpp`'s
+`CommitHeaderAndReboot()`. Assignment changes are the exception — they take
+effect immediately and only need saving when you want them to survive a
+power cycle.
+
 ## Audio conversion
 
 Uploads are converted in the browser to the same 8-bit mono 48kHz format

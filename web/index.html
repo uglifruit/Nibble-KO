@@ -19,12 +19,19 @@
   loudness-match, fade, dither) mirrors tools/importwav.py so a file uploaded
   here sounds like the same file baked at build time.
 
-  WHAT IS REAL: the Kit tab. Connect, per-voice synth/sample assignment, and
-  WAV upload all speak to the card.
+  WHAT IS REAL: the Kit and Samples tabs. Connect, per-voice assignment
+  (any synth voice, any baked sample, any uploaded one), saving the kit, and
+  the whole sample library — upload, rename, delete, erase.
   WHAT IS NOT: Mutes, FX and Patterns are reference displays only — the card
   has no SysEx messages for mute-group assignment, pattern transfer or loop
   settings yet. They are marked as such in the UI rather than quietly
   pretending to work.
+
+  EVERY FLASH WRITE REBOOTS THE CARD, which drops USB and leaves it playing
+  rather than in WebUI mode. That is not a choice — see webui.cpp's
+  CommitHeaderAndReboot(). Anything that writes therefore ends by telling the
+  user to reconnect, and disconnected() is called so the page does not show
+  state it can no longer refresh.
 -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -52,6 +59,9 @@
   --accent-dim: #8a6f4c;
   --err: #e08a72;
   --ok: #a8c47e;
+  /* Ground for an unlit gesture pad — a touch above the page, so a pad reads
+     as a pad rather than as a button. */
+  --pad-bg: #1c1a17;
 }
 
 /* Light mode. Applied by the settings toggle, which stamps data-theme on
@@ -76,6 +86,9 @@
   --accent-dim: #d3b98d;
   --err: #b23c22;
   --ok: #4f7a2e;
+  /* Light mode needs this more than dark does: without it an unlit pad is
+     the same white as the page. */
+  --pad-bg: #e8e3d8;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -220,6 +233,9 @@ section h2 {
 .gesture .pad {
   width: 18px; height: 18px;
   border: 1px solid var(--border-strong);
+  /* An UNPRESSED pad needs its own ground, or in light mode it is the same
+     white as the page and reads as a normal button rather than an unlit pad. */
+  background: var(--pad-bg);
   font-size: 12px;
   line-height: 16px;
   text-align: center;
@@ -287,6 +303,13 @@ section h2 {
   text-align: center; padding: 24px;
   color: var(--text-faint); font-size: 16px; font-style: italic;
 }
+.reconnect-hint {
+  text-align: center; padding: 26px;
+  border: 1px solid var(--accent-dim);
+  background: var(--bg-container);
+  color: var(--text-muted); font-size: 16px; line-height: 1.7;
+}
+.reconnect-hint strong { color: var(--accent); }
 
 .button-row { display: flex; gap: 8px; margin-top: 22px; max-width: 660px; }
 .button-row button {
@@ -340,6 +363,37 @@ progress { width: 100%; max-width: 660px; height: 3px; margin-top: 16px; accent-
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ref-card .ref-sub { display: flex; align-items: center; gap: 8px; }
+
+/* Mutes: the group and its gesture are the message; membership is context,
+   so it is indented and dropped a step in contrast. */
+.mute-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: 10px;
+}
+.mute-head .mute-gesture {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 14px; color: var(--accent); white-space: nowrap;
+}
+.mute-contains {
+  font-size: 14px; font-style: italic;
+  color: var(--text-dim); margin: 14px 0 4px;
+}
+.mute-members { padding-left: 16px; border-left: 1px solid var(--border); }
+.mute-members .ref-voice { color: var(--text-muted); }
+.mute-members .ref-plays { color: var(--text-faint); }
+
+/* The card's two status LEDs, drawn round to distinguish them from the
+   square button pads — same distinction the panel itself makes. */
+.leds { display: flex; gap: 6px; flex-shrink: 0; margin-right: 10px; width: 45px; }
+.led {
+  width: 15px; height: 15px; border-radius: 50%;
+  border: 1px solid var(--border-strong);
+  background: var(--pad-bg);
+}
+.led.on {
+  background: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 0 6px color-mix(in srgb, var(--accent) 60%, transparent);
+}
 
 #io-content { max-width: 600px; font-size: 18px; line-height: 1.7; }
 #io-content p { color: var(--text); }
@@ -633,6 +687,7 @@ const state = {
   library: [],          // [{entry, size, name}] as reported by the card
   pending: new Map(),   // library entry -> {file, audio} staged for upload
   dirtyMap: false,      // a source changed since the last save
+  reconnectHint: false, // an upload just finished; tell them to reconnect
 };
 
 /// What to call a library entry. Names are optional — an unnamed entry is
@@ -841,6 +896,7 @@ async function connect() {
     return;
   }
 
+  state.reconnectHint = false;   // they reconnected; the hint has done its job
   attachMidiIn(state.midiIn);
   navigator.permissions && midi.addEventListener &&
     midi.addEventListener("statechange", (e) => {
@@ -997,8 +1053,8 @@ function renderVoices() {
       lastShift = shift;
       const head = document.createElement("div");
       head.className = "shift-group-head";
-      head.innerHTML = `<span>Hold ${BUTTONS[shift]}</span>` +
-        `<span class="shift-hint">then tap the lit pad</span>`;
+      head.innerHTML = `<span>Hold [${BUTTONS[shift]}]</span>` +
+        `<span class="shift-hint">and tap the other pads</span>`;
       list.appendChild(head);
     }
 
@@ -1088,7 +1144,12 @@ function renderLibrary() {
   const connected = !!state.midiOut;
   list.innerHTML = "";
 
-  if (!connected) {
+  if (!connected && state.reconnectHint) {
+    list.innerHTML =
+      `<div class="reconnect-hint">Samples uploaded.<br>` +
+      `<strong>Reconnect the card to assign them to kit positions:</strong><br>` +
+      `hold the switch Down and press B + D, then click Connect USB.</div>`;
+  } else if (!connected) {
     list.innerHTML = `<div class="empty-msg">Connect the card to see what is on it.</div>`;
   } else if (state.library.length === 0 && state.pending.size === 0) {
     list.innerHTML = `<div class="empty-msg">No uploaded samples. ` +
@@ -1318,9 +1379,15 @@ document.getElementById("send-btn").addEventListener("click", async () => {
     // Say so plainly rather than leaving the page showing a stale library
     // with the new samples missing from every dropdown, which is exactly how
     // this looked when it was wrong.
-    setStatus("Uploaded. The card is restarting — press switch+B+D on it, " +
-              "then Connect again to assign the new samples.", "ok");
+    setStatus("Uploaded. Reconnect the card to assign samples to kit positions — " +
+              "press switch+B+D on it, then Connect.", "ok");
     disconnected();
+
+    // The status line is one line and gets overwritten by the next thing that
+    // happens. This is a two-step instruction the user has to act on, so it
+    // also lands on the page where it stays put until they have done it.
+    state.reconnectHint = true;
+    renderLibrary();
   } catch (err) {
     prog.hidden = true;
     document.getElementById("send-btn").disabled = false;
@@ -1372,23 +1439,30 @@ function renderReference() {
   // MUTES: the toggling gesture drawn as pads, then which voice it silences,
   // then what that voice is CURRENTLY playing — so the page answers "what am
   // I actually muting" rather than only "which pad".
+  // The HEADING is the point of this page: how to mute the group. What is
+  // inside it is supporting detail, so it sits indented and quieter.
   const mutes = document.getElementById("mute-ref");
   mutes.innerHTML = "";
   MUTE_GROUPS.forEach((g, gi) => {
     const shift = BTN_INDEX.B;                 // B is the mute-mode shift
-    const tap   = BTN_INDEX[["A", "C", "D"][gi]];
+    const tapKey = ["A", "C", "D"][gi];
+    const tap = BTN_INDEX[tapKey];
     const card = document.createElement("div");
     card.className = "ref-card";
     card.innerHTML =
-      `<h3>${g.name}</h3>` +
+      `<h3 class="mute-head">Mute Group ${gi + 1}` +
+      `<span class="mute-gesture">HOLD [B] tap [${tapKey}]</span></h3>` +
       `<div class="ref-sub">${gestureHtml(shift, tap)}</div>` +
+      `<div class="mute-contains">This mute group contains:</div>` +
+      `<div class="mute-members">` +
       g.voices.map(v => {
         const row = GESTURE_ROWS.find(r => r.voice === v);
         const pads = row ? gestureHtml(row.shift, row.tap) : "";
         return `<div class="ref-row">${pads}` +
                `<span class="ref-voice">${SYNTH_NAMES[v]}</span>` +
                `<span class="ref-plays">${sourceLabel(v, state.sources[v])}</span></div>`;
-      }).join("");
+      }).join("") +
+      `</div>`;
     mutes.appendChild(card);
   });
 
@@ -1420,12 +1494,52 @@ function renderReference() {
       `<div class="ref-row">${gestureHtml(D, BTN_INDEX[k])}` +
       `<span class="ref-voice">recall pattern ${i + 1}</span></div>`
     ).join("") +
+    `<div class="ref-row"><span class="ref-voice" style="color:var(--text-muted);font-style:italic">` +
+    `Switch UP + the same gesture stores instead of recalling.</span></div>` +
     `</div>` +
+
+    // The switch-held combos. These are PAIRS, both pressed together while
+    // the switch is down — so both pads are drawn filled, not one held and
+    // one tapped, which is a genuinely different gesture.
+    `<div class="ref-card"><h3>Hold the switch DOWN</h3>` +
+    `<div class="ref-sub">then press a pair together</div>` +
+    comboRow(["A", "B"], "Undo the last recording pass") +
+    comboRow(["A", "C"], "Quantise — cycle the record grid") +
+    comboRow(["C", "D"], "Play / Stop") +
+    comboRow(["B", "D"], "Connect USB — this setup mode") +
+    `</div>` +
+
+    // Quantise LED readout. LED 4 alone / both / LED 5 alone, matching
+    // main.cpp's ModeLeds(): led4 = grid != 8th, led5 = grid != 16th.
+    `<div class="ref-card"><h3>Quantise settings</h3>` +
+    `<div class="ref-sub">shown on LEDs 4 and 5 after each press</div>` +
+    ledRow(true,  false, "1/16 — the default") +
+    ledRow(true,  true,  "1/12 — triplet feel") +
+    ledRow(false, true,  "1/8 — loose") +
+    `</div>` +
+
     `<div class="ref-card"><h3>Loop</h3><div class="ref-sub">card-side settings</div>` +
-    `<div class="ref-row"><span class="ref-key">length</span><span class="ref-voice">4 bars, fixed for now</span></div>` +
-    `<div class="ref-row"><span class="ref-key">switch + A+C</span><span class="ref-voice">record grid: 1/16 → 1/12 → 1/8</span></div>` +
-    `<div class="ref-row"><span class="ref-key">switch + A+B</span><span class="ref-voice">undo the last pass</span></div>` +
+    `<div class="ref-row"><span class="ref-voice">Length: 4 bars, fixed for now</span></div>` +
+    `<div class="ref-row"><span class="ref-voice">A hit keeps the grid it was recorded against, so a` +
+    ` straight part and a triplet part can share one loop.</span></div>` +
     `</div>`;
+}
+
+/// Two pads pressed TOGETHER, for the switch-held combos. Both filled,
+/// because neither is a shift for the other.
+function comboRow(keys, label) {
+  const on = keys.map(k => BTN_INDEX[k]);
+  const pads = BUTTONS.map((b, i) =>
+    `<span class="pad${on.includes(i) ? " tap" : ""}">${b}</span>`).join("");
+  return `<div class="ref-row"><span class="gesture">${pads}</span>` +
+         `<span class="ref-voice">${label}</span></div>`;
+}
+
+/// The two status LEDs, as the card shows them.
+function ledRow(led4, led5, label) {
+  const dot = (on) => `<span class="led${on ? " on" : ""}"></span>`;
+  return `<div class="ref-row"><span class="leds">${dot(led4)}${dot(led5)}</span>` +
+         `<span class="ref-voice">${label}</span></div>`;
 }
 
 // --- Tabs and modal ---------------------------------------------------------

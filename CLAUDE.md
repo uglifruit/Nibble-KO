@@ -244,22 +244,26 @@ Roughly in dependency order:
    runtime table — it is indices, not audio — so this is a load rather than
    a redesign.
 
-## Untested: the whole USB path
+## USB: what is proven, and what is not
 
-Written, builds clean, ported from a working reference — but **never run on
-hardware**. Until it has been, treat all of this as unproven:
+**Confirmed on hardware:**
 
 - entering WebUI mode (switch+B+D) and the card enumerating over USB
-- `MSG_HELLO`/`MSG_INFO` round-trip and the capacity figures
-- `MSG_SET_SOURCE` re-pointing a voice live
-- a WAV upload: staging, the five-step flash write, and the reboot after
-- that calibration still survives that reboot (it should — `calibstore.h`
-  landed before this — but it is exactly the kind of thing to check once)
+- `MSG_HELLO`/`MSG_INFO` round-trip — the browser connects
+- `MSG_SET_SOURCE` re-pointing a voice live, with no reboot
 
-The flash-write path is the dangerous half. `docs/LESSONS.md` §4 and
-`webui.cpp`'s `EnterUploadMode()` explain why: get it wrong and the chip
-hangs rather than misbehaving visibly. The code follows WorkshopBio's
-worked version step for step, but "follows a reference" is not "tested".
+**Still unproven** — written, builds clean, ported step-for-step from
+WorkshopBio, but never actually run:
+
+- a WAV upload: staging, the five-step flash write, and the reboot after
+- that calibration survives that reboot (it should — `calibstore.h` landed
+  before this — but it is exactly the kind of thing to check once)
+- `MSG_ERASE` / revert-to-baked
+
+The flash-write path is the dangerous half, and it is the half still
+untested. `docs/LESSONS.md` §4 and `webui.cpp`'s `EnterUploadMode()` explain
+why: get it wrong and the chip hangs rather than misbehaving visibly.
+"Follows a working reference" is not "tested".
 
 ## Known gaps in what IS written
 
@@ -334,7 +338,15 @@ python tools/checkyaml.py   # info.yaml parses AND is structurally complete
 
 All pass, and the card builds clean with `-Wall -Wextra -Wdouble-promotion
 -Wfloat-conversion`. `tools/syntax.sh` does **not** link, so it cannot catch a
-missing symbol — run a real `cmake --build` before believing anything.
+missing symbol — run a real `cmake --build` before believing anything. It also
+missed the duplicate `kFlashBase` in `calibstore.h`/`samplestore.h`, because
+that only became an error once one translation unit included both.
+
+**There IS a node on this machine** (`/c/Program Files/nodejs/node`), so
+`web/index.html`'s script can be genuinely parsed rather than eyeballed:
+extract the `<script>` block to a `.js` and `node --check` it. Worth doing
+after any edit there — it is otherwise the only code in the repo with no
+compiler in front of it.
 
 The Python models are **line-by-line ports** of the C++ they mirror. If you
 change `levels.cpp`, `drums.cpp` or `looper.cpp`, change them too — or delete

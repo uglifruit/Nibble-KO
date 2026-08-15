@@ -146,7 +146,28 @@ section h2 {
 }
 
 /* ---- Kit ---- */
-.voice-list { display: flex; flex-direction: column; gap: 2px; max-width: 660px; }
+.voice-list { display: flex; flex-direction: column; gap: 2px; max-width: 720px; }
+
+/* One heading per shift button, so twelve rows read as four groups of three */
+.shift-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 22px 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  color: var(--text-label);
+}
+.shift-group-head:first-child { margin-top: 0; }
+.shift-group-head .shift-hint {
+  font-size: 11px;
+  font-style: italic;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text-faint);
+}
+
 .voice-tile {
   display: flex;
   align-items: center;
@@ -158,8 +179,43 @@ section h2 {
   transition: background 0.15s;
 }
 .voice-tile:hover { background: var(--bg-panel-hover); }
-.voice-tile .voice-idx { font-size: 11px; color: var(--text-dim); width: 20px; flex-shrink: 0; }
 .voice-tile .voice-name { flex: 1; letter-spacing: 0.3px; }
+
+/* The gesture, drawn as the four pads with the held one and the tapped one
+   lit differently — the same distinction the card's own LEDs make. */
+.gesture {
+  display: flex;
+  gap: 3px;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+.gesture .pad {
+  width: 17px; height: 17px;
+  border: 1px solid var(--border-strong);
+  font-size: 9px;
+  line-height: 15px;
+  text-align: center;
+  color: var(--text-faint);
+  font-family: ui-monospace, Consolas, monospace;
+}
+/* Held: outlined and steady, like the card's half-bright mode marker. */
+.gesture .pad.hold {
+  border-color: var(--accent-dim);
+  color: var(--accent-soft);
+}
+/* Tapped: filled, like the full-bright flash on a hit. */
+.gesture .pad.tap {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1206;
+}
+.gesture-label {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-dim);
+  width: 62px;
+  flex-shrink: 0;
+}
 .voice-tile .voice-file {
   font-size: 11px;
   font-style: italic;
@@ -309,9 +365,11 @@ footer {
     <section>
       <h2>Twelve Voices</h2>
       <p class="hint">
-        Each slot plays either a synthesised drum voice or a sample. Pick a bank entry to make it
-        a sample, or Synth to use the built-in voice — that takes effect immediately, no reboot.
-        Uploading a WAV replaces what a slot plays and restarts the card when you send it.
+        Listed as you play them: hold one button, tap another. The outlined pad is the one you hold,
+        the filled pad the one you tap.<br>
+        Each gesture plays either a synthesised voice or a sample — changing that takes effect
+        immediately, with no reboot. Uploading a WAV replaces what that gesture plays and restarts
+        the card when you send it.
       </p>
       <div class="voice-list" id="voice-list"></div>
       <div class="button-row">
@@ -432,16 +490,41 @@ const MSG = {
   SLOTS: 0x23, SLOTINFO: 0x24, SLOTDET: 0x25, SET_SOURCE: 0x26,
 };
 
-// Voice names, matching drums.cpp's kit order. Cosmetic: the card addresses
-// slots by index and does not send names.
-const VOICE_NAMES = [
+// The SYNTH character of each slot, matching drums.cpp's kVoices table. This
+// is what a slot sounds like when it is not playing a sample — so it stays
+// the name of the synth voice even when a sample is loaded over the top.
+const SYNTH_NAMES = [
   "kick", "kick deep", "snare", "snare snappy",
   "closed hat", "hi-hat metallic", "open hi-hat", "crash",
-  "cowbell", "tom 1", "tom 2", "clap",
+  "cowbell", "tom 1", "tom 2", "syn drum 3",
 ];
 
 // Baked bank entries, matching samples_default.h's import order.
 const BANK_NAMES = ["kick", "snare", "closed hat", "open hat", "clap"];
+
+// Which voice each (shift, tap) gesture plays — kGestureVoice in drums.cpp.
+// -1 is the diagonal: a button cannot be its own tap.
+const GESTURE_VOICE = [
+  [-1,  8,  5,  6],   // hold A
+  [ 7, -1,  1,  3],   // hold B
+  [ 4,  2, -1,  0],   // hold C
+  [ 9, 10, 11, -1],   // hold D
+];
+const BUTTONS = ["A", "B", "C", "D"];
+
+// Voices listed the way they are PLAYED, not the order they are stored in.
+// The card addresses slots by index, but nobody thinks in slot indices while
+// playing — they think "hold C, tap D". Each row of the kit page is one
+// gesture, grouped by which button is held.
+const GESTURE_ROWS = (() => {
+  const rows = [];
+  for (let shift = 0; shift < 4; shift++)
+    for (let tap = 0; tap < 4; tap++) {
+      const v = GESTURE_VOICE[shift][tap];
+      if (v >= 0) rows.push({ shift, tap, voice: v });
+    }
+  return rows;
+})();
 
 const state = {
   midiOut: null, midiIn: null, info: null,
@@ -705,29 +788,69 @@ function updateCapacity() {
 
 // --- Kit tab ----------------------------------------------------------------
 
+/// The four pads with one held and one tapped, plus the gesture in text.
+function gestureHtml(shift, tap) {
+  const pads = BUTTONS.map((b, i) => {
+    const cls = i === shift ? "pad hold" : i === tap ? "pad tap" : "pad";
+    return `<span class="${cls}">${b}</span>`;
+  }).join("");
+  return `<span class="gesture">${pads}</span>` +
+         `<span class="gesture-label">${BUTTONS[shift]}+${BUTTONS[tap]}</span>`;
+}
+
+/// What a slot will actually play, named the way the player thinks of it:
+/// the source first, then which sound.
+function sourceLabel(voice, src) {
+  return src === SOURCE_SYNTH
+    ? `synth (${SYNTH_NAMES[voice]})`
+    : `sample (${BANK_NAMES[src]})`;
+}
+
+/// How to refer to a slot in a message. The gesture identifies it far better
+/// than a slot index does — "C+D" is a thing you can go and press.
+function voiceLabel(voice) {
+  const row = GESTURE_ROWS.find(r => r.voice === voice);
+  const g = row ? `${BUTTONS[row.shift]}+${BUTTONS[row.tap]}` : `voice ${voice}`;
+  return `${g} (${SYNTH_NAMES[voice]})`;
+}
+
 function renderVoices() {
   const list = document.getElementById("voice-list");
   const connected = !!state.midiOut;
   list.innerHTML = "";
 
-  for (let v = 0; v < NUM_VOICES; v++) {
+  let lastShift = -1;
+  for (const row of GESTURE_ROWS) {
+    const { shift, tap, voice: v } = row;
+
+    if (shift !== lastShift) {
+      lastShift = shift;
+      const head = document.createElement("div");
+      head.className = "shift-group-head";
+      head.innerHTML = `<span>Hold ${BUTTONS[shift]}</span>` +
+        `<span class="shift-hint">then tap the lit pad</span>`;
+      list.appendChild(head);
+    }
+
     const tile = document.createElement("div");
     tile.className = "voice-tile";
 
     const src = state.sources[v];
     const isSample = src !== SOURCE_SYNTH;
 
-    let opts = `<option value="${SOURCE_SYNTH}"${!isSample ? " selected" : ""}>Synth</option>`;
+    let opts = `<option value="${SOURCE_SYNTH}"${!isSample ? " selected" : ""}>` +
+               `synth (${SYNTH_NAMES[v]})</option>`;
     for (let b = 0; b < BANK_NAMES.length; b++)
-      opts += `<option value="${b}"${src === b ? " selected" : ""}>${BANK_NAMES[b]}</option>`;
+      opts += `<option value="${b}"${src === b ? " selected" : ""}>` +
+              `sample (${BANK_NAMES[b]})</option>`;
 
     const staged = state.pending.get(v);
     const fileLabel = staged ? staged.name
                      : state.userLoaded[v] ? "uploaded" : "";
 
     tile.innerHTML =
-      `<span class="voice-idx mono">${String(v).padStart(2, "0")}</span>` +
-      `<span class="voice-name">${VOICE_NAMES[v]}</span>` +
+      gestureHtml(shift, tap) +
+      `<span class="voice-name">${sourceLabel(v, src)}</span>` +
       `<span class="voice-file">${fileLabel}</span>` +
       `<select data-v="${v}" class="${isSample ? "is-sample" : ""}"${connected ? "" : " disabled"}>${opts}</select>` +
       `<button class="upload-btn" data-v="${v}" title="Upload a WAV"${connected ? "" : " disabled"}>&uarr;</button>`;
@@ -749,8 +872,8 @@ document.getElementById("voice-list").addEventListener("change", async (e) => {
 
   state.sources[v] = bank;
   setStatus(bank === SOURCE_SYNTH
-    ? `${VOICE_NAMES[v]} is now synthesised.`
-    : `${VOICE_NAMES[v]} now plays ${BANK_NAMES[bank]}.`, "ok");
+    ? `${voiceLabel(v)} is now synthesised.`
+    : `${voiceLabel(v)} now plays the ${BANK_NAMES[bank]} sample.`, "ok");
   renderVoices();
 });
 
@@ -768,7 +891,7 @@ document.getElementById("voice-list").addEventListener("click", (e) => {
     try {
       const audio = trim(await decodeWav(file));
       state.pending.set(v, { name: file.name, audio });
-      setStatus(`${file.name} ready for ${VOICE_NAMES[v]}. Click Send when you have staged everything.`);
+      setStatus(`${file.name} ready for ${voiceLabel(v)}. Click Send when you have staged everything.`);
       renderVoices();
     } catch (err) {
       setStatus(`Could not read ${file.name} — is it really an audio file?`, "err");
@@ -834,7 +957,7 @@ document.getElementById("send-btn").addEventListener("click", async () => {
         await waitAck();
         done += Math.min(CHUNK, p.bytes.length - off);
         prog.value = done / total;
-        setStatus(`Uploading ${VOICE_NAMES[p.voice]}… ${((done / total) * 100) | 0}%`);
+        setStatus(`Uploading ${voiceLabel(p.voice)}… ${((done / total) * 100) | 0}%`);
       }
       send([MSG.UP_SLOTEND]);
       await waitAck();
@@ -896,7 +1019,12 @@ function renderReference() {
     const card = document.createElement("div");
     card.className = "ref-card";
     card.innerHTML = `<h3>${g.name}</h3><div class="ref-sub">${g.key}</div>` +
-      g.voices.map(v => `<div class="ref-row"><span>${VOICE_NAMES[v]}</span></div>`).join("");
+      g.voices.map(v => {
+        const row = GESTURE_ROWS.find(r => r.voice === v);
+        const g2 = row ? `${BUTTONS[row.shift]}+${BUTTONS[row.tap]}` : "";
+        return `<div class="ref-row"><span class="ref-key">${g2}</span>` +
+               `<span>${SYNTH_NAMES[v]}</span></div>`;
+      }).join("");
     mutes.appendChild(card);
   });
 

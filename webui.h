@@ -131,6 +131,18 @@ public:
 	/// flash — see the file header's five-step protocol.
 	static volatile bool core0Parked;
 
+	/// Like uploadMode, but TEMPORARY: core 0 parks, the header sector is
+	/// rewritten, and then playing resumes. USB is never masked, so the card
+	/// keeps its connection and does not reboot.
+	///
+	/// This is what makes save/rename/delete usable. A reboot drops USB, and
+	/// since usbMode lives in RAM the card comes back up PLAYING rather than
+	/// in WebUI mode — so every one of those actions used to mean walking over
+	/// and pressing switch+B+D again before the browser could do anything
+	/// else. An upload still reboots, because the audio it just wrote has to
+	/// be re-read through XIP.
+	static volatile bool pauseAudio;
+
 	/// How far the upload got, shown on the LEDs as a binary count while
 	/// uploadMode is set. See WorkshopBio/webui.h for the stage numbering this
 	/// is expected to mirror.
@@ -152,6 +164,10 @@ private:
 	/// card actually holds. Every handler that rewrites the header calls this
 	/// first — without it, changing one entry would blank all the others.
 	void SeedHeaderFromFlash();
+
+	/// Rewrite the header sector WITHOUT rebooting: park core 0, commit, then
+	/// let it go again. For save/rename/delete, which touch no audio.
+	void CommitHeaderLive();
 
 	bool     uploading_ = false;
 	uint8_t  slotEntry_ = 0;    // library entry currently being received

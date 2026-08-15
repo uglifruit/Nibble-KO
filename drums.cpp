@@ -436,10 +436,16 @@ void DrumKit::TriggerVoice(int8_t voice, int32_t yKnob,
 	const SampleRef s = ResolveSample(voice);
 	DrumVoice &slot = voice_[PickSlot()];
 
+	// A synthesised slot can borrow ANOTHER voice's character — two kicks, or
+	// a tom on every pad. SynthVoiceFor() returns the slot's own index unless
+	// the browser has pointed it somewhere else, so the ordinary case is
+	// unchanged.
+	const int synth = SynthVoiceFor(voice, gVoiceSample[voice]);
+
 	if (s.data && s.len)
-		slot.TriggerPcm(s.data, s.len, pitchScale, kVoices[voice].level);
+		slot.TriggerPcm(s.data, s.len, pitchScale, kVoices[synth].level);
 	else
-		slot.Trigger(kVoices[voice], pitchScale, decayAdj);
+		slot.Trigger(kVoices[synth], pitchScale, decayAdj);
 
 	// The transport effects go on AFTER the trigger, because both need the
 	// voice already set up: reverse has to know where the recording ends, and

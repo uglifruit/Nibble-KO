@@ -518,13 +518,17 @@ const MFR = 0x7D;
 const SR  = 48000;
 const NUM_VOICES = 12;
 
-// Wire encoding of a slot's source, matching samplestore.h:
-//   0 .. baked          a built-in sample
-//   USER_BASE + n       an uploaded library entry
-//   WIRE_SYNTH          synthesise this voice
-// 0x7F for synth because SysEx data bytes are 7-bit and cannot carry -1.
+// Wire encoding of a slot's source, matching samplestore.h. The ranges are
+// disjoint on purpose — an overlap would silently play a sample where a synth
+// voice was asked for:
+//   0  .. 63    a built-in sample
+//   64 .. 95    an uploaded library entry
+//   96 .. 107   a synth voice, by index (borrow another voice's character)
+//   0x7F        synthesise with this slot's OWN character
+// 0x7F rather than -1 because SysEx data bytes are 7-bit.
 const WIRE_SYNTH = 0x7F;
 const USER_BASE  = 64;
+const SYNTH_BASE = 96;
 
 const MSG = {
   HELLO: 0x01, INFO: 0x02,
@@ -588,14 +592,18 @@ function entryLabel(e) {
   return `USER${e + 1}`;
 }
 
-/// Every sound the card can play, in the order dropdowns should offer them.
-function allSources() {
-  const out = [{ value: WIRE_SYNTH, label: null }];   // label filled per voice
-  for (let b = 0; b < BANK_NAMES.length; b++)
-    out.push({ value: b, label: `sample (${BANK_NAMES[b]})` });
-  for (const l of state.library)
-    out.push({ value: USER_BASE + l.entry, label: `sample (${entryLabel(l.entry)})` });
-  return out;
+/// Every sound the card can play, grouped the way the dropdown shows them.
+/// Every slot is offered everything: its own synth voice, any OTHER synth
+/// voice, every built-in sample, and every uploaded one.
+function sourceGroups() {
+  return [
+    { label: "Synth", items: SYNTH_NAMES.map((n, i) => ({
+        value: SYNTH_BASE + i, label: `synth (${n})` })) },
+    { label: "Built-in samples", items: BANK_NAMES.map((n, b) => ({
+        value: b, label: `sample (${n})` })) },
+    { label: "Your samples", items: state.library.map(l => ({
+        value: USER_BASE + l.entry, label: `sample (${entryLabel(l.entry)})` })) },
+  ].filter(g => g.items.length);
 }
 
 // --- audio conversion (mirrors tools/importwav.py) ---------------------------
@@ -892,9 +900,20 @@ function gestureHtml(shift, tap) {
 /// the source first, then which sound. "synth" names the voice's OWN
 /// character, which is why it needs the voice as well as the source.
 function sourceLabel(voice, src) {
-  if (src === WIRE_SYNTH) return `synth (${SYNTH_NAMES[voice]})`;
-  if (src >= USER_BASE)   return `sample (${entryLabel(src - USER_BASE)})`;
+  if (src === WIRE_SYNTH)  return `synth (${SYNTH_NAMES[voice]})`;
+  if (src >= SYNTH_BASE)   return `synth (${SYNTH_NAMES[src - SYNTH_BASE]})`;
+  if (src >= USER_BASE)    return `sample (${entryLabel(src - USER_BASE)})`;
   return `sample (${BANK_NAMES[src]})`;
+}
+
+/// The dropdown value that should read as selected for this slot.
+///
+/// WIRE_SYNTH ("my own character") and SYNTH_BASE+ownIndex are the same
+/// sound, but only the latter is an option in the list — so a slot left at
+/// its factory default must match against that, or the dropdown would show
+/// the first entry instead of what is actually playing.
+function selectedValue(voice, src) {
+  return src === WIRE_SYNTH ? SYNTH_BASE + voice : src;
 }
 
 /// How to refer to a slot in a message. The gesture identifies it far better
@@ -927,15 +946,18 @@ function renderVoices() {
     tile.className = "voice-tile";
 
     const src = state.sources[v];
-    const isSample = src !== WIRE_SYNTH;
+    const isSample = src !== WIRE_SYNTH && src < SYNTH_BASE;
+    const sel = selectedValue(v, src);
 
-    // EVERY sound is offered on EVERY slot: synth, all baked, all uploaded.
-    // Nothing about a sound ties it to one pad — that is the whole point of
-    // the library model.
-    const opts = allSources().map((o) => {
-      const label = o.value === WIRE_SYNTH ? `synth (${SYNTH_NAMES[v]})` : o.label;
-      return `<option value="${o.value}"${src === o.value ? " selected" : ""}>${label}</option>`;
-    }).join("");
+    // EVERY sound is offered on EVERY slot: any synth voice, every baked
+    // sample, every uploaded one. Nothing ties a sound to one pad.
+    const opts = sourceGroups().map(g =>
+      `<optgroup label="${g.label}">` +
+      g.items.map(o =>
+        `<option value="${o.value}"${sel === o.value ? " selected" : ""}>${o.label}</option>`
+      ).join("") +
+      `</optgroup>`
+    ).join("");
 
     tile.innerHTML =
       gestureHtml(shift, tap) +
@@ -1098,7 +1120,11 @@ document.getElementById("library-list").addEventListener("click", async (e) => {
     for (let i = 0; i < nm.length; i++) msg.push(nm.charCodeAt(i) & 0x7F);
     send(msg);
     await waitAck(10000).catch(() => null);
-    setStatus(`Renamed. The card is restarting.`, "ok");
+    // No reboot: a header-only write keeps USB up, so just re-read.
+    await refreshLibrary();
+    setStatus(`Renamed to ${nm}.`, "ok");
+    renderLibrary();
+    renderVoices();
     return;
   }
 
@@ -1112,17 +1138,25 @@ document.getElementById("library-list").addEventListener("click", async (e) => {
                  `This frees the slot but not the space — only Erase All reclaims bytes.`)) return;
     send([MSG.DELETE, entry]);
     await waitAck(10000).catch(() => null);
-    setStatus("Deleted. The card is restarting.", "ok");
+    // No reboot, so re-read both: the library lost an entry, and any voice
+    // that was playing it has been moved back to synth by the card.
+    await refreshLibrary();
+    await refreshSlots();
+    setStatus("Deleted.", "ok");
+    renderLibrary();
+    renderVoices();
   }
 });
 
 document.getElementById("save-map-btn").addEventListener("click", async () => {
   if (!state.midiOut) return;
-  setStatus("Saving the kit — the card will restart.");
+  setStatus("Saving the kit…");
   send([MSG.SAVE_MAP]);
   await waitAck(10000).catch(() => null);
   state.dirtyMap = false;
-  setStatus("Kit saved. The card is restarting into it.", "ok");
+  // Header-only write, so the card never left — no reboot, no reconnect.
+  setStatus("Kit saved. It will come back this way after a power cycle.", "ok");
+  renderVoices();
 });
 
 document.getElementById("send-btn").addEventListener("click", async () => {
@@ -1204,8 +1238,18 @@ document.getElementById("send-btn").addEventListener("click", async () => {
 
     prog.hidden = true;
     state.pending.clear();
-    setStatus("Sent. The card is writing flash and restarting — it will disappear from USB.", "ok");
-    renderLibrary();
+
+    // An upload REBOOTS the card — the audio it just wrote has to be re-read
+    // through XIP — and a reboot drops USB. usbMode lives in RAM, so the card
+    // comes back up PLAYING, not in WebUI mode, and cannot be reached again
+    // until someone presses switch+B+D.
+    //
+    // Say so plainly rather than leaving the page showing a stale library
+    // with the new samples missing from every dropdown, which is exactly how
+    // this looked when it was wrong.
+    setStatus("Uploaded. The card is restarting — press switch+B+D on it, " +
+              "then Connect again to assign the new samples.", "ok");
+    disconnected();
   } catch (err) {
     prog.hidden = true;
     document.getElementById("send-btn").disabled = false;
@@ -1216,10 +1260,14 @@ document.getElementById("send-btn").addEventListener("click", async () => {
 
 document.getElementById("revert-btn").addEventListener("click", async () => {
   if (!state.midiOut) return;
-  setStatus("Clearing uploaded samples — the card will restart.");
+  if (!confirm("Erase every uploaded sample and reset the kit to the built-in one?\n\n" +
+               "This is the only thing that reclaims space.")) return;
+  setStatus("Erasing — the card will restart.");
   send([MSG.ERASE]);
   await waitAck(10000).catch(() => null);
-  setStatus("Cleared. The card is restarting on its built-in samples.", "ok");
+  setStatus("Erased. The card is restarting on its built-in kit — press " +
+            "switch+B+D, then Connect, to use it again.", "ok");
+  disconnected();
 });
 
 document.getElementById("connect-btn").addEventListener("click", () => {

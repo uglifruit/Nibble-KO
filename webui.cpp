@@ -40,6 +40,7 @@ namespace nko {
 volatile bool WebUI::usbMode = false;
 volatile bool WebUI::uploadMode = false;
 volatile bool WebUI::core0Parked = false;
+volatile bool WebUI::pauseAudio = false;
 volatile uint8_t WebUI::stage = 0;
 
 // ---------------------------------------------------------------------------
@@ -270,6 +271,42 @@ void __not_in_flash_func(WebUI::SeedHeaderFromFlash)()
 		for (int v = 0; v < kNumVoices; v++) hdr_.slotSource[v] = gVoiceSample[v];
 		baseOff_ = 0;
 	}
+}
+
+/// Rewrite the header sector and carry on playing.
+///
+/// The audio interrupt still has to stop — an erase drops XIP and core 0's
+/// caller lives in flash — but USB does NOT, because nothing here writes the
+/// data area and TinyUSB's own state is in RAM. So the sequence is: park core
+/// 0, mask only the two audio interrupts, write, unmask, release.
+///
+/// USBCTRL_IRQ is deliberately left enabled, which is the whole difference
+/// from EnterUploadMode(). That is safe only because this runs ON core 1, is
+/// itself RAM-resident, and the USB interrupt handler is not reached during
+/// the erase — tud_task() is not called until after XIP is back.
+void __not_in_flash_func(WebUI::CommitHeaderLive)()
+{
+	WebUI::pauseAudio = true;
+	absolute_time_t deadline = make_timeout_time_ms(250);
+	while (!WebUI::core0Parked && !time_reached(deadline)) tight_loop_contents();
+
+	irq_set_enabled(DMA_IRQ_0, false);
+	irq_set_enabled(PWM_IRQ_WRAP, false);
+
+	// Prime boot2's RAM copy while XIP is definitely still up — same reason
+	// as EnterUploadMode(), and just as necessary here.
+	flash_range_erase(kUserRegionOff, 0);
+
+	CommitHeader();
+
+	irq_set_enabled(PWM_IRQ_WRAP, true);
+	irq_set_enabled(DMA_IRQ_0, true);
+
+	// Release core 0. gVoiceSample is deliberately NOT reloaded from the
+	// header here: every caller has already set it to what it wants and the
+	// header was written FROM it, so re-reading would at best be a no-op and
+	// at worst undo a change made while the write was in flight.
+	WebUI::pauseAudio = false;
 }
 
 void __not_in_flash_func(WebUI::FlushPage)()
@@ -547,24 +584,16 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 
 	case MSG_SAVE_MAP:
 	{
-		// Commit the slot map to flash WITHOUT rebooting.
-		//
-		// This is the one flash write the card can do while staying usable:
-		// the audio is untouched, so nothing needs re-reading afterwards, and
-		// the header sector is rewritten from the live gVoiceSample[]. Audio
-		// still has to stop for the erase — that is unavoidable — but there is
-		// no reason to reboot after it, and rebooting would drop USB and make
-		// "save" feel like a much bigger action than it is.
+		// Commit the slot map to flash WITHOUT rebooting — see
+		// CommitHeaderLive(). The audio is untouched, so nothing needs
+		// re-reading and the browser keeps its connection.
 		SeedHeaderFromFlash();
 		for (int v = 0; v < kNumVoices; v++)
 			hdr_.slotSource[v] = gVoiceSample[v];
 		writeOff_ = hdr_.totalBytes;
 
+		CommitHeaderLive();
 		SendAck(13, 0);
-		FlushUsb(150);
-		EnterUploadMode();
-		CommitHeader();
-		watchdog_reboot(0, 0, 0);
 		break;
 	}
 
@@ -651,17 +680,14 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 			hdr_.name[e][i] = static_cast<char>(p[2 + i]);
 		hdr_.name[e][i] = '\0';
 
-		SendAck(14, e);
-		if (inSession) break;
+		if (inSession) { SendAck(14, e); break; }
 
 		// Standalone rename: commit now, because the user expects a rename to
-		// stick and there is no later commit coming. Header-only write — the
-		// audio is untouched.
+		// stick and there is no later commit coming. Header-only, so it needs
+		// no reboot.
 		writeOff_ = hdr_.totalBytes;
-		FlushUsb(150);
-		EnterUploadMode();
-		CommitHeader();
-		watchdog_reboot(0, 0, 0);
+		CommitHeaderLive();
+		SendAck(14, e);
 		break;
 	}
 
@@ -692,11 +718,8 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 		}
 		writeOff_ = hdr_.totalBytes;
 
+		CommitHeaderLive();
 		SendAck(6, 0);
-		FlushUsb(150);
-		EnterUploadMode();
-		CommitHeader();
-		watchdog_reboot(0, 0, 0);
 		break;
 	}
 

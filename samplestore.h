@@ -63,7 +63,7 @@ constexpr int kMaxUserSamples = 32;
 /// index, so uploading never forces you to name anything.
 constexpr int kNameLen = 16;
 
-/// Slot source sentinel: this voice is synthesised.
+/// Slot source sentinel: synthesise this voice with its OWN character.
 ///
 /// Note this is the STORED value. webui.h has kWireSynth (0x7F) for the same
 /// idea on the wire, because SysEx bytes are 7-bit and cannot carry -1. The
@@ -71,14 +71,32 @@ constexpr int kNameLen = 16;
 /// encodings, and conflating them is how a sign error gets in.
 constexpr int8_t kSourceSynth = -1;
 
-/// Slot sources at or above this are USER library entries; below it they are
-/// indices into the baked bank.
+/// WHAT A SOURCE VALUE MEANS. One flat numbering covers every sound the card
+/// can make, so a dropdown can offer all of them for any slot and only
+/// ResolveSample() needs to know which library a value came from:
 ///
-/// One flat numbering across both libraries is what lets a dropdown offer
-/// every sound for every slot without the caller needing to know which
-/// library a sound came from — the split is an implementation detail of
-/// ResolveSample(), not something the protocol or the browser carries.
+///     0  .. 63    baked bank      (kMaxSamples entries)
+///     64 .. 95    user library    (kUserSourceBase + kMaxUserSamples)
+///     96 .. 107   synth voices    (kSynthBase + kNumVoices)
+///     -1          synth, this slot's OWN character (kSourceSynth)
+///
+/// THE RANGES MUST NOT OVERLAP, and getting that wrong is silent: a slot
+/// would play a sample where a synth voice was asked for. The static_asserts
+/// below are what stop that happening when one of these is next widened.
+///
+/// kSourceSynth stays as the shorthand for "my own character" — what a slot
+/// resets to and what the factory kit uses. It is equivalent to kSynthBase
+/// plus the slot's own index; keeping it distinct means the common case does
+/// not have to know its own number.
 constexpr int8_t kUserSourceBase = 64;
+constexpr int8_t kSynthBase      = 96;
+
+static_assert(kUserSourceBase >= kMaxSamples,
+              "the user range must start above the baked bank");
+static_assert(kSynthBase >= kUserSourceBase + kMaxUserSamples,
+              "the synth range must start above the user library");
+static_assert(kSynthBase + kNumVoices <= 127,
+              "every source value must fit in an int8_t and a 7-bit SysEx byte");
 
 /// Directory written at the start of the user region. Fixed size so it can be
 /// erased and rewritten as one 4KB sector.
@@ -179,13 +197,27 @@ static inline bool UserEntryPresent(int entry)
 /// Is this source value a user library entry?
 static inline bool IsUserSource(int src) { return src >= kUserSourceBase; }
 
-/// Validate a source value: synth, a real baked entry, or a filled user entry.
+/// Is this source value "synthesise, with voice N's character"?
+static inline bool IsSynthSource(int src)
+{
+	return src >= kSynthBase && src < kSynthBase + kNumVoices;
+}
+
+/// Which synth voice a slot should render as: its own, or a borrowed one.
+static inline int SynthVoiceFor(int voice, int src)
+{
+	return IsSynthSource(src) ? (src - kSynthBase) : voice;
+}
+
+/// Validate a source value: synth (own or borrowed), a real baked entry, or a
+/// filled user entry.
 ///
 /// Bounds-checked because the caller is a SysEx message from a browser, i.e. a
 /// system boundary rather than trusted internal code.
 static inline bool SourceValid(int src)
 {
 	if (src == kSourceSynth) return true;
+	if (IsSynthSource(src)) return true;
 	if (IsUserSource(src)) return UserEntryPresent(src - kUserSourceBase);
 	return src >= 0 && src < kMaxSamples;
 }
@@ -235,7 +267,9 @@ static inline SampleRef ResolveSample(int voice)
 	if (voice < 0 || voice >= kNumVoices) return { nullptr, 0 };
 
 	const int src = gVoiceSample[voice];
-	if (src == kSourceSynth) return { nullptr, 0 };
+	// Either flavour of synth: no audio, and DrumKit uses SynthVoiceFor() to
+	// decide whose character to render.
+	if (src == kSourceSynth || IsSynthSource(src)) return { nullptr, 0 };
 
 	if (IsUserSource(src))
 	{

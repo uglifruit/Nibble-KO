@@ -192,7 +192,19 @@ constexpr int kLoopTicks    = kTicksPerBeat * kBeatsPerLoop;   // 768
 ///     property for this card.
 enum class QuantGrid : uint8_t { k16th = 0, k12th = 1, k8th = 2, kNumGrids = 3 };
 
-constexpr int kQuantDivisor[static_cast<int>(QuantGrid::kNumGrids)] = { 16, 12, 8 };
+/// NOTES PER BEAT, not a divisor of kTicksPerBeat directly — a 1/16 note is
+/// FOUR per beat (kTicksPerBeat/4), a 1/8 note TWO (kTicksPerBeat/2), and a
+/// 1/12 "note" here means the triplet-eighth feel, THREE per beat
+/// (kTicksPerBeat/3). QuantiseTick() does that division.
+///
+/// An earlier version of this table held {16, 12, 8} and used it directly as
+/// the divisor of kTicksPerBeat=48, which gives 16/12/8 grid points PER BEAT
+/// instead of per bar — a grid four times finer than the names claimed. At
+/// that resolution even the loosest setting (1/8, meant to be "loose enough
+/// to keep a sloppy take human") only ever moved a hit by up to 3 ticks out
+/// of 768, under 40ms at a typical tempo: inaudible, which is exactly the
+/// bug report that found this ("I don't think I'm hearing them").
+constexpr int kQuantNotesPerBeat[static_cast<int>(QuantGrid::kNumGrids)] = { 4, 3, 2 };
 
 constexpr int kMaxEvents = 512;
 

@@ -37,7 +37,7 @@ uint16_t Looper::FireTick(const LoopEvent &ev) const
 /// function because the wrap needs the same care FireTick() used to take.
 uint16_t Looper::QuantiseTick(uint16_t tick) const
 {
-	const int q = kTicksPerBeat / kQuantDivisor[static_cast<int>(quantGrid_)];
+	const int q = kTicksPerBeat / kQuantNotesPerBeat[static_cast<int>(quantGrid_)];
 	uint16_t snapped = static_cast<uint16_t>(((tick + q / 2) / q) * q);
 	return static_cast<uint16_t>(snapped % kLoopTicks);
 }

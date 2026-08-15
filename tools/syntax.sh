@@ -19,6 +19,7 @@ cd "$(dirname "$0")/.."
 
 TC="$USERPROFILE/.pico-sdk/toolchain/14_2_Rel1/bin"
 SDK="$USERPROFILE/.pico-sdk/sdk/2.2.0/src"
+TUSB="$USERPROFILE/.pico-sdk/sdk/2.2.0/lib/tinyusb"
 CXX="$TC/arm-none-eabi-g++.exe"
 
 # The SDK header set the card actually reaches, plus the generated config that
@@ -73,11 +74,19 @@ INC="
 -I$SDK/rp2040/hardware_structs/include
 -I$SDK/rp2040/boot_stage2/include
 -I$SDK/boards/include
+-I$SDK/rp2_common/pico_unique_id/include
+-I$SDK/rp2_common/tinyusb/include
+-I$TUSB/src
+-I$TUSB/hw
 -Itools/fakeinc
 "
 
+# CFG_TUSB_MCU/OS are what tusb_config.h needs to pick a port; without them
+# TinyUSB's headers refuse to compile. CMake passes these too — see the
+# -DCFG_TUSB_* flags in a real build line.
 DEF="-DPICO_RP2040=1 -DPICO_ON_DEVICE=1 -DPICO_NO_HARDWARE=0 \
--DPICO_XOSC_STARTUP_DELAY_MULTIPLIER=64 -DLIB_PICO_MULTICORE=0"
+-DPICO_XOSC_STARTUP_DELAY_MULTIPLIER=64 -DLIB_PICO_MULTICORE=0 \
+-DCFG_TUSB_MCU=OPT_MCU_RP2040 -DCFG_TUSB_OS=OPT_OS_PICO -DCFG_TUSB_DEBUG=0"
 
 FILES="$*"
 if [ -z "$FILES" ]; then

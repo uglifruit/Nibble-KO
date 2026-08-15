@@ -49,18 +49,14 @@
 namespace nko {
 
 // --- Flash layout ------------------------------------------------------
-// Same 2MB part as samplestore.h's kFlashBase/kFlashSize. Placed well clear
-// of both firmware code and the 1MB user-sample region at the top: a fixed
-// low offset just past where code realistically ends, checked at runtime
-// (CalibRegionInBounds()) rather than a build-time guard, since 4KB is not
-// worth wiring into checksize.cmake.
-constexpr uint32_t kFlashBase      = 0x10000000u;
-constexpr uint32_t kFlashSize      = 2u * 1024 * 1024;
-constexpr uint32_t kCalibRegionOff = 512u * 1024;   // 512KB in: past any
-                                                     // plausible code size,
-                                                     // 512KB clear of the
-                                                     // 1MB user-sample region.
-constexpr uint32_t kCalibSector    = 4096;
+// kFlashBase/kFlashSize/kFlashSector live in nibbleko.h, which describes the
+// physical part once for every region that carves it up.
+//
+// 512KB in: past any plausible firmware size, and 512KB clear of the
+// user-sample region above. CMakeLists.txt's checksize.cmake step fails the
+// build if the image ever grows far enough to reach this sector.
+constexpr uint32_t kCalibRegionOff = 512u * 1024;
+constexpr uint32_t kCalibSector    = kFlashSector;
 
 struct CalibHeader
 {

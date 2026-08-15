@@ -14,14 +14,14 @@
 // addressing collapsed to a single voice index (0..kNumVoices-1), and a new
 // MSG_SET_SOURCE for choosing synth vs. sample per slot.
 //
-// TODO(design session): this header is the INTERFACE shape only. Method
-// bodies in webui.cpp are stubs. Do not implement them until:
-//   1. drums.h's VoiceSource::Sample / DrumVoice PCM playback exists — an
-//      upload with nothing to play it back is dead code.
-//   2. The exact protocol for MSG_SET_SOURCE and any round-robin question
-//      (see drums.h) is decided.
+// Both things this header once waited on are settled:
+//   1. PCM playback exists and is hardware-tested — TriggerVoice resolves
+//      each hit through ResolveSample(), so an upload has somewhere to land.
+//   2. MSG_SET_SOURCE's payload is [voice, bank], one byte each, with
+//      kSourceSynth (0x7F) meaning "synthesise this slot". It writes
+//      gVoiceSample[] in samplestore.h.
 //
-// IMPORTANT, when the body IS written: writing flash while ComputerCard runs
+// IMPORTANT: writing flash while ComputerCard runs
 // WILL HANG THE CARD unless all five steps in docs/LESSONS.md §"If you let
 // users upload samples" are followed — raise-and-wait for core 0 to park,
 // disable DMA_IRQ_0 + PWM_IRQ_WRAP + USBCTRL_IRQ, prime the boot2 RAM copy,
@@ -56,9 +56,9 @@ enum : uint8_t {
 	MSG_SLOTS       = 0x23,  // fw->ui: which slots currently hold user audio
 	MSG_SLOTINFO    = 0x24,  // ui->fw: request detail; fw replies MSG_SLOTDET
 	MSG_SLOTDET     = 0x25,  // fw->ui: per-slot offset+size
-	MSG_SET_SOURCE  = 0x26,  // ui->fw: set a slot to synth or sample
-	                          // TODO(design session): payload shape undecided
-	                          // — depends on drums.h's VoiceSource design.
+	MSG_SET_SOURCE  = 0x26,  // ui->fw: point a slot at a bank entry, or -1 to
+	                          // synthesise it. Payload [voice, bank], one byte
+	                          // each, bank 0x7F meaning "synth" — see below.
 	MSG_PROF_GET    = 0x30,  // ui->fw: send the timing peaks (profile builds)
 	MSG_PROF        = 0x31,  // fw->ui: peak cycles per bucket + overrun count
 };
@@ -70,15 +70,29 @@ constexpr uint8_t kManufacturerId = 0x7D;
 /// user flash region. Writing flash takes USB down with it, so a transfer
 /// has to be received in FULL before any of it is committed.
 ///
-/// TODO(design session): sized from WorkshopBio's figure as a placeholder.
-/// Re-derive against this card's actual RAM budget (no second core / no
-/// TinyUSB-driven core split has been decided either way yet).
+/// 160KB, the same figure WorkshopBio ships on identical hardware (RP2040,
+/// 256KB RAM) — so this is a proven budget rather than an estimate. It only
+/// fits because USB is MODAL: nothing instantiates WebUI until switch+B+D
+/// enters Mode::WebUi, and by then the card has stopped playing. Watch
+/// --print-memory-usage after any change here; the card's own state is only
+/// ~38KB, so this buffer is by far the largest thing in RAM.
 constexpr uint32_t kUploadMax = 160u * 1024u;
 
 // Error codes carried by MSG_UP_ERR.
 enum : uint8_t {
 	ERR_NONE = 0, ERR_TOO_BIG = 1, ERR_BAD_SLOT = 2, ERR_PROTOCOL = 3,
 };
+
+/// MSG_SET_SOURCE's "this slot is synthesised" sentinel.
+///
+/// 0x7F, NOT 0xFF, and the distinction is not cosmetic: every byte inside a
+/// SysEx message must be 7-bit (0x00-0x7F), so 0xFF cannot travel on the wire
+/// at all — it would be read as a status byte and truncate the message. The
+/// firmware translates this to the -1 that gVoiceSample actually stores.
+///
+/// 0x7F is otherwise unreachable as a real bank index, since kMaxSamples is
+/// 64, so there is no ambiguity to resolve.
+constexpr uint8_t kSourceSynth = 0x7F;
 
 /// 7-bit encode/decode. Returns bytes written.
 /// Encoded length = ceil(srcLen/7)*8; decoded length <= (srcLen/8)*7.
@@ -87,10 +101,8 @@ uint32_t Decode7bit(const uint8_t *src, uint32_t srcLen, uint8_t *dst, uint32_t 
 
 /// USB-MIDI transport + upload state machine.
 ///
-/// TODO(design session): method bodies are stubs in webui.cpp — see file
-/// header. Shape mirrors WorkshopBio::WebUI closely enough that porting the
-/// implementation should be mechanical once the PCM backend exists; the
-/// mode*variant loops there become a single loop over kNumVoices here.
+/// Ported from WorkshopBio::WebUI, whose mode*variant slot addressing becomes
+/// a single flat loop over kNumVoices here.
 class WebUI
 {
 public:

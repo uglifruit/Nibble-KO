@@ -22,7 +22,7 @@
 //
 // EVERYTHING HERE IS INDIRECTION, DELIBERATELY. The full chain is:
 //
-//     pattern event -> voice index -> kVoiceSample -> bank index -> here
+//     pattern event -> voice index -> gVoiceSample -> bank index -> here
 //
 // and each arrow is a lookup rather than a copy. That is what lets uploads
 // change what a pattern SOUNDS like without touching the pattern, which stays
@@ -30,25 +30,29 @@
 // means two voices can share a recording, and that re-pointing a slot costs
 // one byte rather than a second copy of the audio.
 //
+// The slot->bank assignment is runtime data: gVoiceSample below, seeded from
+// the baked kVoiceSample defaults and rewritten by the browser. It is not yet
+// PERSISTED, so a reboot restores the defaults — UserSampleHeader::reserved[]
+// is budgeted for that next revision.
+//
 // TODO(webui): the user region's layout is a starting point, not measured
 // against this card's real code+bank size. checksize.cmake guards the
-// boundary once uploads are live. When they are, kVoiceSample stops being a
-// compile-time table and becomes a runtime one loaded from flash beside the
-// audio — the shape is already right, since it is indices rather than data.
+// boundary now that uploads are live.
 
 #pragma once
 #include <stdint.h>
+#include "nibbleko.h"         // kFlashBase/kFlashSize/kFlashSector
 #include "drums.h"            // kNumVoices
 #include "samples_default.h"  // baked fallback
 
 namespace nko {
 
 // --- Flash layout ----------------------------------------------------------
-// RP2040 XIP window. The user region is the last 1MB of a 2MB part — same
-// split WorkshopBio uses. Revisit once this card's actual flash usage
-// (synth tables + whatever baked samples ship) is known.
-constexpr uint32_t kFlashBase     = 0x10000000u;
-constexpr uint32_t kFlashSize     = 2u * 1024 * 1024;
+// kFlashBase/kFlashSize/kFlashSector live in nibbleko.h, which describes the
+// physical part once for every region that carves it up.
+//
+// The user region is the last 1MB of the 2MB part — the same split
+// WorkshopBio uses.
 constexpr uint32_t kUserRegionOff = 1u * 1024 * 1024;   // offset within flash
 constexpr uint32_t kUserRegionLen = 1u * 1024 * 1024;
 
@@ -70,10 +74,7 @@ constexpr uint32_t kUserMagic   = 0x4B4F3101u;   // "KO1" + version nibble
 constexpr uint32_t kUserVersion = 1;
 
 // The header occupies the first flash sector of the region; audio follows.
-// RP2040 flash erases a sector at a time; every erase must be sector-aligned.
-constexpr uint32_t kFlashSector   = 4096;
-
-constexpr uint32_t kUserHeaderLen = 4096;
+constexpr uint32_t kUserHeaderLen = kFlashSector;
 constexpr uint32_t kUserDataOff   = kUserRegionOff + kUserHeaderLen;
 constexpr uint32_t kUserDataLen   = kUserRegionLen - kUserHeaderLen;
 
@@ -96,6 +97,39 @@ static inline bool HaveUserSamples()
 
 // SampleRef lives in samples_default.h, since the baked bank is the source
 // that always exists; the user region is the override on top of it.
+
+/// WHICH bank entry each voice slot plays, at runtime. -1 keeps the slot
+/// synthesised.
+///
+/// Starts as a copy of samples_default.h's baked kVoiceSample defaults, and
+/// is rewritten per-slot by the browser over MSG_SET_SOURCE (see webui.h).
+/// That is the whole reason it exists: kVoiceSample is constexpr, so the
+/// assignment had to become data the card can change without a reflash.
+///
+/// RAM ONLY for now, so a reboot restores the baked defaults — the same tier
+/// as the mute-group mapping. Persisting it belongs with the next revision of
+/// UserSampleHeader, which has reserved[] budgeted for exactly this.
+///
+/// `inline` because both drums.cpp and webui.cpp include this header and both
+/// need the same array, not one each.
+inline int8_t gVoiceSample[kNumVoices] = {
+	kVoiceSample[0],  kVoiceSample[1],  kVoiceSample[2],  kVoiceSample[3],
+	kVoiceSample[4],  kVoiceSample[5],  kVoiceSample[6],  kVoiceSample[7],
+	kVoiceSample[8],  kVoiceSample[9],  kVoiceSample[10], kVoiceSample[11],
+};
+static_assert(kNumVoices == 12, "gVoiceSample's initialiser is written out "
+                                "per slot and must match kNumVoices");
+
+/// Point a slot at a bank entry, or at -1 to synthesise it. Bounds-checked
+/// because the caller is a SysEx message from a browser, i.e. a system
+/// boundary rather than trusted internal code.
+static inline bool SetVoiceSample(int voice, int bank)
+{
+	if (voice < 0 || voice >= kNumVoices) return false;
+	if (bank < -1 || bank >= kMaxSamples) return false;
+	gVoiceSample[voice] = static_cast<int8_t>(bank);
+	return true;
+}
 
 /// Resolve one VOICE SLOT to the audio it should play, or {nullptr, 0} for
 /// "this voice is synthesised".
@@ -120,7 +154,7 @@ static inline SampleRef ResolveSample(int voice)
 			return { UserData() + h->offset[voice], sz };
 	}
 
-	return BakedSample(kVoiceSample[voice]);
+	return BakedSample(gVoiceSample[voice]);
 }
 
 /// True if a slot has a user upload overriding its baked default.
@@ -136,7 +170,7 @@ static inline bool VoiceHasSample(int voice)
 {
 	if (voice < 0 || voice >= kNumVoices) return false;
 	if (VoiceIsUserLoaded(voice)) return true;
-	return BakedSample(kVoiceSample[voice]).len > 0;
+	return BakedSample(gVoiceSample[voice]).len > 0;
 }
 
 } // namespace nko

@@ -39,17 +39,15 @@ if (Python3_FOUND AND EXISTS ${SAMPLE_DIR})
   add_custom_target(pcm_samples DEPENDS ${CMAKE_CURRENT_LIST_DIR}/samples.h)
 endif()
 
-# webui.cpp is deliberately NOT built yet. It is a stub with no TinyUSB calls
-# (see its header), so linking it would only add dead weight and invite the
-# mistake of thinking USB works. It joins this list when the WebUI lands,
-# together with tinyusb_device/tinyusb_board/pico_multicore below.
 add_executable(${CARD_NAME}
   main.cpp
   levels.cpp
   drums.cpp
   looper.cpp
   fx.cpp
-  fastmath.cpp)
+  fastmath.cpp
+  webui.cpp
+  usb_descriptors.c)
 
 if (TARGET pcm_samples)
   add_dependencies(${CARD_NAME} pcm_samples)
@@ -77,29 +75,48 @@ target_compile_definitions(${CARD_NAME} PRIVATE PICO_XOSC_STARTUP_DELAY_MULTIPLI
 
 target_include_directories(${CARD_NAME} PUBLIC ${CMAKE_CURRENT_LIST_DIR})
 
-# TODO(webui): once webui.cpp's stub becomes a real TinyUSB implementation
-# (see that file's header), this needs tinyusb_device, tinyusb_board and
-# pico_multicore added — see WorkshopBio/CMakeLists.txt, whose "why there is
-# USB and a second core here but not in NIBBLE" is the relevant precedent.
+# USB lives on core 1, which is why pico_multicore is here. NIBBLE (the
+# synth-only sibling) needs neither: its whole per-sample load is a few
+# hundred cycles and it has nothing to talk to. TinyUSB's tud_task() measured
+# ~36000 cycles on WorkshopBio, i.e. 14x the entire 20.8us audio budget, so it
+# cannot share core 0 with ProcessSample() — see main.cpp's core1Entry.
 #
-# hardware_flash stays regardless, and it is worth being precise about why:
-# ComputerCard.h itself includes hardware/flash.h to read the factory CV
-# output calibration. That dependency exists whether or not this card ever
-# writes flash of its own — which it soon will, for the saved levels.
+# hardware_flash would be needed even if this card stored nothing:
+# ComputerCard.h includes hardware/flash.h to read the factory CV output
+# calibration. It now also carries the saved levels (calibstore.h) and user
+# samples (samplestore.h).
 target_link_libraries(${CARD_NAME}
   pico_stdlib
+  pico_multicore
   hardware_dma
   hardware_i2c
   hardware_pwm
   hardware_adc
   hardware_spi
   hardware_vreg
-  hardware_flash)
+  hardware_flash
+  tinyusb_device
+  tinyusb_board)
 
-# TODO(calibstore/webui): once the saved calibration and user-sample uploads
-# are real, guard the firmware/user-region boundary the way WorkshopBio does —
-# PICO_FLASH_SIZE_BYTES=2097152 plus a POST_BUILD checksize.cmake call with
-# -DLIMIT matching samplestore.h's kUserRegionOff.
+# Flash is carved up in three: firmware low, the saved calibration at 512KB
+# (calibstore.h), user samples in the top 1MB (samplestore.h). Both stored
+# regions sit at FIXED addresses so reflashing the firmware never moves or
+# wipes them.
+target_compile_definitions(${CARD_NAME} PRIVATE PICO_FLASH_SIZE_BYTES=2097152)
+
+# Guard the first boundary the image can actually hit. The firmware (code plus
+# baked samples) must not reach the calibration sector at 512KB, or flashing
+# would destroy the saved levels and the card would come up needing a full
+# recalibration. Baked audio is the thing most likely to push it over, so fail
+# the build loudly rather than corrupt a card.
+#
+# -DLIMIT tracks calibstore.h's kCalibRegionOff. If that moves, move this.
+add_custom_command(TARGET ${CARD_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND}
+    -DELF=$<TARGET_FILE:${CARD_NAME}>
+    -DOBJDUMP=${CMAKE_OBJDUMP}
+    -DLIMIT=524288
+    -P ${CMAKE_CURRENT_LIST_DIR}/tools/checksize.cmake)
 
 pico_add_extra_outputs(${CARD_NAME})
 

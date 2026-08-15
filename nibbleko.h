@@ -268,6 +268,30 @@ static inline int32_t SemisToMillivolts(int32_t semis)
 }
 
 // ---------------------------------------------------------------------------
+// Flash
+// ---------------------------------------------------------------------------
+//
+// The physical part, described once. calibstore.h and samplestore.h each
+// carve a region out of it and both used to declare these themselves, which
+// only compiled while no translation unit included both — adding USB put them
+// together and the duplicate definitions broke the build.
+//
+// The map, low to high:
+//
+//   0x000000  firmware (code + baked samples)
+//   0x080000  saved calibration, one 4KB sector   (calibstore.h)
+//   0x100000  user samples, 1MB                   (samplestore.h)
+//
+// Both stored regions sit at FIXED offsets so reflashing firmware never moves
+// or wipes them. CMakeLists.txt's checksize.cmake step fails the build if the
+// image grows into the first of them.
+constexpr uint32_t kFlashBase   = 0x10000000u;
+constexpr uint32_t kFlashSize   = 2u * 1024 * 1024;
+
+/// RP2040 flash erases a sector at a time; every erase must be sector-aligned.
+constexpr uint32_t kFlashSector = 4096;
+
+// ---------------------------------------------------------------------------
 // LEDs
 // ---------------------------------------------------------------------------
 

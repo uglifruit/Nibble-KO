@@ -21,10 +21,12 @@ namespace nko {
 // the two sounds a pattern is mostly made of need one finger each; the toms sit
 // on pairs sharing a finger, so hold-A-and-tap gives a tom run.
 //
-// TODO(design session): once VoiceSource::Sample exists, this table is where
-// each slot's default source gets decided — and the WebUI will let the user
-// override any slot at runtime. For now every voice is synth-only, unchanged
-// from NIBBLE.
+// This table is the SYNTH character of each slot. Whether a slot actually
+// renders from it or from a recording is decided elsewhere, by
+// gVoiceSample[] in samplestore.h — an index into the sample bank, or -1 to
+// stay synthesised. TriggerVoice resolves that per hit through
+// ResolveSample(), so a slot that plays a sample simply never reaches the
+// synth path and its entry here goes unused.
 
 /// The kit as a flat list of VOICES, which is what the looper records.
 ///

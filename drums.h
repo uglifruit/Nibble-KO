@@ -29,10 +29,10 @@
 // knob makes the whole kit higher-and-shorter or lower-and-longer, which is
 // what tape does and what anyone who has pitched a sampler expects.
 //
-// TODO(webui): kVoiceSample is still a compile-time table. It becomes a
-// runtime one loaded from flash when the browser can assign bank entries to
-// slots — the shape is already right for that, being indices rather than
-// audio. See webui.h's MSG_SET_SOURCE.
+// Which slot plays what is RUNTIME data, not a compile-time table:
+// gVoiceSample[] in samplestore.h starts as a copy of the baked kVoiceSample
+// defaults and is rewritten per-slot by the browser over MSG_SET_SOURCE. The
+// shape was always right for this, being indices rather than audio.
 
 #pragma once
 #include <stdint.h>
@@ -60,14 +60,6 @@ constexpr uint32_t HzToInc(int32_t hz)
 {
 	return static_cast<uint32_t>((static_cast<int64_t>(hz) << kPhaseBits) / 48000);
 }
-
-/// Which backend a voice slot renders from. Chosen per-voice via the WebUI —
-/// see the file header TODO. kSample is not implemented yet; DrumSpec entries
-/// are all kSynth for now.
-enum class VoiceSource : uint8_t {
-	Synth  = 0,
-	Sample = 1,   ///< TODO(design session): not implemented — see file header
-};
 
 struct DrumSpec
 {

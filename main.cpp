@@ -166,9 +166,11 @@
 #include "fx.h"
 #include "fastmath.h"
 #include "calibstore.h"
+#include "webui.h"
 
 #include "hardware/vreg.h"
 #include "pico/stdlib.h"
+#include "pico/multicore.h"
 
 using namespace nko;
 
@@ -442,6 +444,29 @@ public:
 
 	virtual void __not_in_flash_func(ProcessSample)() override
 	{
+		// ---- An upload is starting: park HERE, in RAM, and never return --
+		//
+		// Writing flash drops XIP, and core 0 cannot survive that: this
+		// function is RAM-resident but its CALLER is not — ComputerCard's
+		// AudioCallback and BufferFull live in flash, and the CV output runs a
+		// second flash-resident ISR (PWM_IRQ_WRAP). Any of them executing when
+		// the erase begins is a hard fault.
+		//
+		// So core 0 stops inside this function, mutes the outputs, says it has
+		// arrived, and spins until the reboot. It never returns, so the
+		// flash-resident caller never runs again. Masking DMA_IRQ_0 alone is
+		// NOT sufficient and that mistake has hung this family of cards before
+		// — see docs/LESSONS.md and webui.cpp's EnterUploadMode().
+		if (WebUI::uploadMode)
+		{
+			AudioOut1(0);
+			AudioOut2(0);
+			PulseOut1(false);
+			PulseOut2(false);
+			WebUI::core0Parked = true;
+			for (;;) tight_loop_contents();
+		}
+
 		// ---- Boot window ------------------------------------------------
 		//
 		// The switch is NOT readable straight away, and reads Down until it
@@ -540,6 +565,29 @@ public:
 
 		PulseOut2(clickTimer_ > 0);
 		if (clickTimer_ > 0) clickTimer_--;
+	}
+
+	/// Upload progress, driven from CORE 1 while core 0 is parked.
+	///
+	/// Must stay RAM-resident and touch nothing but the LED PWM registers:
+	/// it runs during flash erases, with XIP down, so a call into anything
+	/// flash-resident here would fault the only core still alive.
+	///
+	/// LEDs 0-3 count WebUI::stage in binary — the stages are numbered in
+	/// webui.cpp, and seeing which one it stopped at is the only diagnostic
+	/// available once USB is gone. LEDs 4-5 fill in as a coarse progress bar.
+	///
+	/// `progress` is passed in rather than read from the WebUI object because
+	/// core 1 is the caller and already holds it; this keeps the card class
+	/// from needing to know the USB stack exists.
+	void __not_in_flash_func(ShowUploadProgress)(int32_t progress)
+	{
+		const uint8_t st = WebUI::stage;
+		for (int i = 0; i < 4; i++)
+			LedBrightness(i, (st & (1u << i)) ? kLedFull : 0);
+
+		LedBrightness(4, progress > (kQ16One / 3)     ? kLedHalf : 0);
+		LedBrightness(5, progress > (kQ16One * 2 / 3) ? kLedHalf : 0);
 	}
 
 private:
@@ -675,8 +723,19 @@ private:
 		// left stuck on by switching away mid-press.
 		fxHeld_ = 0;
 
-		// TODO(webui): entering Mode::WebUi sets WebUI::usbMode and hands the
-		// card over. The USB stack is a stub, so for now this is inert.
+		// Entering the WebUI hands the card to USB, permanently: core 1 is
+		// waiting on this flag, brings TinyUSB up when it flips, and stays
+		// there. The card does not appear on USB at all until this point,
+		// which is the whole reason USB is modal — an uninitialised stack
+		// arms no flash-resident interrupt to compete with the audio path.
+		//
+		// One-way. The way back is MSG_PLAY from the browser, which reboots.
+		if (m == Mode::WebUi)
+		{
+			playing_ = false;
+			recording_ = false;
+			WebUI::usbMode = true;
+		}
 	}
 
 	/// One of the switch+pair actions.
@@ -698,13 +757,12 @@ private:
 			break;
 
 		case Action::Quantise:
-			// Cycles the LIVE PLAYBACK grid (16th -> 12th -> 8th -> 16th),
-			// non-destructively — the raw stored ticks never change, so this
-			// is free to experiment with. Not a one-shot "snap these hits"
-			// action: that would need to decide what happens to Undo, and
-			// cycling a setting is both simpler and more useful for the same
-			// gesture. quantFlash_ counts which grid was landed on so the
-			// LEDs can show it.
+			// Cycles the RECORD grid (16th -> 12th -> 8th -> 16th), which
+			// applies to hits recorded from now on. Anything already in the
+			// loop keeps the grid it was captured against — see looper.h's
+			// QuantGrid, and note this is NOT a one-shot "snap these hits"
+			// action. quantFlash_ holds the LED readout for a moment so the
+			// landed grid can be read off LEDs 4 and 5.
 			quantGrid_    = loop_.CycleQuantGrid();
 			quantFlash_   = kQuantFlashTicks;
 			break;
@@ -1715,7 +1773,12 @@ private:
 		}
 
 		case Mode::WebUi:
-			// TODO(webui): show WebUI::stage as a binary count here.
+			// Waiting for the browser: all four pads breathe together, slowly,
+			// so the card visibly says "I am on USB and doing nothing yet"
+			// rather than looking dead.
+			//
+			// Once an UPLOAD starts this display stops running entirely —
+			// core 0 has parked and core 1 drives ShowUploadProgress() instead.
 			for (int i = 0; i < 4; i++)
 				LedBrightness(i, ((uiTicks_ >> 9) & 1) ? kLedGlow : 0);
 			break;
@@ -1992,6 +2055,49 @@ private:
 
 // ===========================================================================
 
+/// The USB stack, and the card core 1 needs a handle on for the LED display.
+///
+/// FILE SCOPE, not a member of NibbleKoCard, and the reason is size: WebUI
+/// carries a 160KB RAM staging buffer (see webui.h's kUploadMax), which is
+/// most of this chip's 256KB. Keeping it out of the card object keeps that
+/// allocation obvious in the map file rather than buried in a class whose
+/// other members are a few hundred bytes.
+static WebUI        gWebUI;
+static NibbleKoCard *gCard = nullptr;
+
+/// Set once core 0 has finished booting and published gCard, so core 1 never
+/// dereferences it early.
+static volatile bool gUsbReady = false;
+
+/// Core 1: idle until the WebUI mode is entered, then nothing but USB.
+///
+/// It must not touch anything core 0 owns. Before usbMode flips there is
+/// genuinely nothing for it to do — unlike WorkshopBio, whose core 1 runs an
+/// ecosystem simulation while it waits — so this is a plain spin.
+///
+/// TinyUSB is initialised HERE rather than at boot, which is the point of the
+/// modal design: with the stack down the card does not enumerate and
+/// USBCTRL_IRQ (whose handler lives in flash) is never armed, so nothing
+/// competes with the audio path while the card is being played.
+static void __not_in_flash_func(core1Entry)()
+{
+	while (!gUsbReady) tight_loop_contents();
+	while (!WebUI::usbMode) tight_loop_contents();
+
+	gWebUI.Init();
+	for (;;)
+	{
+		gWebUI.Task();
+
+		// Once an upload starts, core 0's audio interrupt is off and this is
+		// the only core still running — so the progress display has to be
+		// driven from here. LedBrightness only writes a PWM register and is
+		// RAM-safe, so it survives mid-erase.
+		if (WebUI::uploadMode && gCard)
+			gCard->ShowUploadProgress(gWebUI.Progress());
+	}
+}
+
 int main()
 {
 	// Overclock before anything else. 192MHz at 1.15V is proven on this exact
@@ -2002,5 +2108,14 @@ int main()
 	set_sys_clock_khz(192000, true);
 
 	static NibbleKoCard card;
+
+	// Core 1 is launched HERE, not in the card's constructor. That constructor
+	// runs during ComputerCard's own construction, before the peripherals are
+	// up, and this card's rule is that nothing touching hardware happens there
+	// — see NibbleKoCard's constructor comment.
+	gCard = &card;
+	multicore_launch_core1(core1Entry);
+	gUsbReady = true;
+
 	card.Run();   // never returns
 }

@@ -206,9 +206,9 @@ Roughly in dependency order:
    below) rather than needing its own flash-write path: land it as part of
    the pattern-transfer protocol instead of a separate store.
 
-2. **The WebUI covers the KIT only.** `webui.cpp` is real and in the build,
-   `web/index.html` is written: connect, per-voice synth/sample assignment
-   (`MSG_SET_SOURCE`, instant, no reboot) and WAV upload all work. What is
+2. **The WebUI covers the KIT and SAMPLES only.** Connect, assignment
+   (`MSG_SET_SOURCE`, instant), saving the kit (`MSG_SAVE_MAP`), and the
+   whole sample library — upload, name, delete, erase — all work. What is
    still missing needs NEW SysEx messages, none of which exist:
    - **pattern transfer** — a pattern is a bare event list under 2KB and
      carries no audio, so this is close to a straight dump over SysEx, and
@@ -220,17 +220,20 @@ Roughly in dependency order:
    The Mutes/FX/Patterns tabs in `web/index.html` are reference displays
    that say so, rather than controls that quietly do nothing.
 
-   **`gVoiceSample` is not persisted.** An assignment survives until the
-   card reboots, then reverts to the baked defaults. `UserSampleHeader` has
-   `reserved[8]` budgeted for it.
+3. **Deleting a sample frees the SLOT, not the space.** Uploads append, and
+   nothing compacts the region — only `MSG_ERASE` reclaims bytes. The
+   Samples tab reports both numbers (live audio vs append watermark) rather
+   than letting the difference look like a bug. A compaction pass would mean
+   rewriting the whole region with audio moving under live offsets, which is
+   a much bigger job than it looks.
 
-3. **Loop LENGTH is still fixed at four bars.** `kLoopTicks` is only ever
+4. **Loop LENGTH is still fixed at four bars.** `kLoopTicks` is only ever
    used in ordinary wrap arithmetic in `looper.cpp` — nothing is sized by it
    — so making it runtime-settable (2 bars, 1 bar) is a small change, and a
    natural WebUI setting. The quantise grid has already made this move; see
    `QuantGrid` for the shape.
 
-4. **Mute groups are hardcoded.** `MuteGroupOf()` splits the kit three ways
+5. **Mute groups are hardcoded.** `MuteGroupOf()` splits the kit three ways
    by voice index so the mode is testable; the real mapping belongs in the
    WebUI alongside sample assignment.
 
@@ -239,31 +242,27 @@ Roughly in dependency order:
    music, so it stays card state, persists across pattern recalls, and is
    outside Undo. Do not "finish" it.
 
-5. **`kVoiceSample` is compile-time.** Five voices are sampled and seven
-   synthesised, fixed at build. The indirection is already right for a
-   runtime table — it is indices, not audio — so this is a load rather than
-   a redesign.
-
 ## USB: what is proven, and what is not
 
-**Confirmed on hardware:**
+**Confirmed on hardware (v1 protocol):** entering WebUI mode (switch+B+D),
+enumeration, `MSG_HELLO`/`MSG_INFO`, live re-assignment, a WAV upload
+including the five-step flash write, uploaded audio surviving a power cycle,
+and `MSG_ERASE`.
 
-- entering WebUI mode (switch+B+D) and the card enumerating over USB
-- `MSG_HELLO`/`MSG_INFO` round-trip — the browser connects
-- `MSG_SET_SOURCE` re-pointing a voice live, with no reboot
+**Unproven — the v2 library rework changed all of this.** The upload path is
+the same shape and the same flash protocol, but the header layout, the
+message set and the browser are new:
 
-**Still unproven** — written, builds clean, ported step-for-step from
-WorkshopBio, but never actually run:
+- the v2 `UserSampleHeader` (library entries + slot map, `kUserMagic` bumped)
+- `MSG_SAVE_MAP`, `MSG_NAME`, `MSG_DELETE`, `MSG_LIBRARY`/`MSG_LIBDET`
+- `LoadSlotSources()` restoring the kit at boot
+- the burst reply in `MSG_LIBRARY`, which pumps `tud_task()` between sends
+  because 32 entries is 768 bytes against a 256-byte TX FIFO
 
-- a WAV upload: staging, the five-step flash write, and the reboot after
-- that calibration survives that reboot (it should — `calibstore.h` landed
-  before this — but it is exactly the kind of thing to check once)
-- `MSG_ERASE` / revert-to-baked
-
-The flash-write path is the dangerous half, and it is the half still
-untested. `docs/LESSONS.md` §4 and `webui.cpp`'s `EnterUploadMode()` explain
-why: get it wrong and the chip hangs rather than misbehaving visibly.
-"Follows a working reference" is not "tested".
+**A v2 card cannot read a v1 upload.** `kUserMagic` changed, so
+`HaveUserSamples()` answers false and the card falls back to baked samples —
+which is the intended failure, not a bug. Anything uploaded before this
+needs re-uploading.
 
 ## Known gaps in what IS written
 

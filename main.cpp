@@ -2114,6 +2114,14 @@ int main()
 	sleep_ms(2);
 	set_sys_clock_khz(192000, true);
 
+	// Restore which sound each voice plays, from the saved map in flash. Must
+	// happen BEFORE the card starts playing, or the first hits come out of the
+	// baked defaults and change under the player a moment later.
+	//
+	// Reading flash is safe here: XIP is up, nothing is writing, and the audio
+	// interrupt has not started.
+	LoadSlotSources();
+
 	static NibbleKoCard card;
 
 	// Core 1 is launched HERE, not in the card's constructor. That constructor

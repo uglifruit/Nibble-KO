@@ -300,25 +300,24 @@ Hold the switch **Down** and press **B + D**: the card goes silent, all four
 pads glow, and it appears over USB as a MIDI device. Open [`web/index.html`](web/index.html)
 in Chrome or Edge and click Connect.
 
-From there you can point any of the twelve voices at a different sample (or
-back to its synthesised voice) and hear it immediately, and upload your own
-WAVs — converted in the browser to the same 8-bit 48kHz format the baked
-samples use, then written to flash. See [`web/README.md`](web/README.md).
+Uploaded samples form a **library**, not a per-pad slot: one recording can be
+played by several voices at once and costs the space of one. Every gesture
+can be pointed at anything the card holds — its own synth voice, a built-in
+sample, or one of yours — and you hear the change immediately, with Save Kit
+making it survive a power cycle.
 
-Uploads **append**, so sending one voice leaves the other eleven alone, and
-an upload restarts the card when it lands.
-
-> **Written but not yet played.** The USB path builds clean and is ported
-> step-for-step from BioMimicry's working version, but it has not been run on
-> hardware yet.
+WAVs are converted in the browser to the same 8-bit 48kHz format the built-in
+samples use. See [`web/README.md`](web/README.md).
 
 ## What isn't done
 
-- **Only the Kit is configurable from the browser.** Mute groups, patterns
-  and loop settings need SysEx messages that do not exist yet, so those tabs
-  are reference displays. Pattern transfer is the obvious next one.
-- **Voice assignment isn't saved.** Re-pointing a voice lasts until the card
-  reboots, then reverts to the factory kit. Uploaded audio *is* saved.
+- **Only the Kit and Samples are configurable from the browser.** Mute
+  groups, patterns and loop settings need SysEx messages that do not exist
+  yet, so those tabs are reference displays. Pattern transfer is the obvious
+  next one.
+- **Deleting a sample frees the slot, not the space.** Uploads append and
+  nothing compacts the region; only Erase All reclaims bytes. The Samples tab
+  shows both numbers.
 - **Patterns are RAM only** — they do not survive a power cycle.
 - **Mute groups are hardcoded** three ways by voice index.
 

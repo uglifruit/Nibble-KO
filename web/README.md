@@ -21,9 +21,9 @@ appearing rather than making you press Connect again.
 
 ## What is real, and what is not
 
-**The Kit tab talks to the card.** Per-voice synth/sample assignment
-(`MSG_SET_SOURCE`, applies instantly, no reboot) and WAV upload
-(`MSG_UP_*`, writes flash and restarts the card) are both wired up.
+**The Kit and Samples tabs talk to the card.** Assignment (`MSG_SET_SOURCE`,
+instant, no reboot), saving the kit (`MSG_SAVE_MAP`), and the whole sample
+library — upload, rename, delete, erase — are all wired up.
 
 **Mutes, FX and Patterns are reference displays.** The firmware has no SysEx
 messages for mute-group assignment, pattern transfer or loop settings yet, so
@@ -31,6 +31,26 @@ those tabs document the card's gestures rather than configuring anything. The
 page says so rather than pretending otherwise. Pattern transfer is the
 obvious next one to build — a pattern is a bare event list under 2KB with no
 audio attached.
+
+## The library model
+
+A sample is **not** tied to a pad. Uploads go into a library of up to 32
+numbered entries, and each of the twelve voices names one sound: its own
+synth character, a built-in sample, or a library entry. So:
+
+- one recording can be played by several voices, costing the space of one
+- re-pointing a voice is one byte, not a second copy of the audio
+- patterns are unaffected — they store voice indices, so changing what a
+  voice plays changes what an existing pattern sounds like without touching
+  the pattern
+
+Entries are `USER1`, `USER2`… until you name them; uploads take their name
+from the filename automatically.
+
+**Deleting frees the slot, not the space.** Uploads append and nothing
+compacts the region, so the Samples tab reports live audio and the append
+watermark separately — "3 samples totalling 40KB, 900KB consumed" is a real
+state, and only Erase All resets it.
 
 ## Audio conversion
 

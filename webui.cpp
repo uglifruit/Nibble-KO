@@ -252,6 +252,26 @@ void __not_in_flash_func(WebUI::SendErr)(uint8_t code)
 	uploading_ = false;
 }
 
+void __not_in_flash_func(WebUI::SeedHeaderFromFlash)()
+{
+	const UserSampleHeader *cur = UserHeader();
+	if (cur->magic == kUserMagic && cur->version == kUserVersion)
+	{
+		memcpy(&hdr_, cur, sizeof(hdr_));
+		baseOff_ = cur->totalBytes;
+	}
+	else
+	{
+		// No valid directory yet — start blank, but seed the slot map from
+		// what the card is playing RIGHT NOW rather than zeroing it. Zero is a
+		// real source value (baked entry 0, the kick), so a memset would
+		// silently point all twelve voices at the kick.
+		memset(&hdr_, 0, sizeof(hdr_));
+		for (int v = 0; v < kNumVoices; v++) hdr_.slotSource[v] = gVoiceSample[v];
+		baseOff_ = 0;
+	}
+}
+
 void __not_in_flash_func(WebUI::FlushPage)()
 {
 	if (pageFill_ == 0) return;
@@ -291,12 +311,18 @@ void __not_in_flash_func(WebUI::WriteStagedBuffer)()
 	WebUI::stage = 6;
 
 	// Staging-buffer offsets become flash offsets now the base is known. Only
-	// slots this session actually STAGED audio for get rebased — a slot pointed
-	// at bytes already in flash (MSG_UP_KEEP) holds a real flash offset that
-	// must be left alone.
+	// entries this session actually STAGED audio for get rebased — an entry
+	// kept from a previous session (MSG_UP_KEEP) already holds a real flash
+	// offset and must be left alone.
+	for (int e = 0; e < kMaxUserSamples; e++)
+		if (hdr_.size[e] > 0 && touched_[e])
+			hdr_.offset[e] += base;
+
+	// An upload saves the ASSIGNMENT too. The browser normally points a slot
+	// at the entry it just uploaded, and a card that came back up holding the
+	// audio but not the assignment would look like the upload half worked.
 	for (int v = 0; v < kNumVoices; v++)
-		if (hdr_.size[v] > 0 && touched_[v])
-			hdr_.offset[v] += base;
+		hdr_.slotSource[v] = gVoiceSample[v];
 
 	writeOff_ = base + bufLen_;
 	CommitHeader();
@@ -332,6 +358,13 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 	{
 		// Version, capacity, and what is actually loaded, so the browser can
 		// describe the card rather than guess.
+		//
+		// `used` is the APPEND WATERMARK, not the live byte count — uploads
+		// append, so this is what decides whether another one fits. Deleting
+		// an entry does not move it, which is why the Samples tab reports the
+		// two separately (see `live` below): "3 samples totalling 40KB, but
+		// 900KB of the region consumed" is a real state and the only honest
+		// way to explain why a delete freed nothing.
 		uint32_t used = 0;
 		if (HaveUserSamples())
 		{
@@ -339,8 +372,9 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 			used = uh->totalBytes;
 			if (used > kUserDataLen) used = kUserDataLen;
 		}
+		const uint32_t live = UserBytesUsed();
 
-		uint8_t info[14] = {
+		uint8_t info[18] = {
 			MSG_INFO, kUserVersion,
 			static_cast<uint8_t>(HaveUserSamples() ? 1 : 0),
 			static_cast<uint8_t>(kHaveSamples ? 1 : 0),
@@ -359,8 +393,15 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 			static_cast<uint8_t>( used        & 0x7F),
 			static_cast<uint8_t>((kUserDataLen >> 14) & 0x7F),
 			static_cast<uint8_t>((kUserDataLen >> 7)  & 0x7F),
-			static_cast<uint8_t>( kUserDataLen        & 0x7F) };
-		Send(info, 14);
+			static_cast<uint8_t>( kUserDataLen        & 0x7F),
+			// How many entries the library can hold, and how many live bytes
+			// they actually occupy. `live` differs from `used` once anything
+			// has been deleted — see the comment above.
+			static_cast<uint8_t>(kMaxUserSamples),
+			static_cast<uint8_t>((live >> 14) & 0x7F),
+			static_cast<uint8_t>((live >> 7)  & 0x7F),
+			static_cast<uint8_t>( live        & 0x7F) };
+		Send(info, 18);
 		break;
 	}
 
@@ -383,18 +424,8 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 		bufLen_ = 0;
 
 		// Start from what is already on the card rather than a blank table, so
-		// uploading one voice leaves the other eleven alone.
-		const UserSampleHeader *cur = UserHeader();
-		if (cur->magic == kUserMagic && cur->version == kUserVersion)
-		{
-			memcpy(&hdr_, cur, sizeof(hdr_));
-			baseOff_ = cur->totalBytes;
-		}
-		else
-		{
-			memset(&hdr_, 0, sizeof(hdr_));
-			baseOff_ = 0;
-		}
+		// uploading one sample leaves the rest of the library alone.
+		SeedHeaderFromFlash();
 		memset(touched_, 0, sizeof(touched_));
 
 		if (baseOff_ + expected_ > kUserDataLen) { SendErr(ERR_TOO_BIG); break; }
@@ -406,13 +437,14 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 
 	case MSG_UP_SLOT:
 	{
-		// payload: voice index. No mode to clear first — slots are flat here,
-		// so beginning a slot cannot disturb any other one.
+		// payload: LIBRARY ENTRY index — not a voice. An upload adds a sound
+		// to the library; which pads play it is a separate question, answered
+		// by MSG_SET_SOURCE.
 		if (!uploading_ || n < 2) { SendErr(ERR_PROTOCOL); break; }
-		slotVoice_ = p[1];
-		if (slotVoice_ >= kNumVoices) { SendErr(ERR_BAD_SLOT); break; }
+		slotEntry_ = p[1];
+		if (slotEntry_ >= kMaxUserSamples) { SendErr(ERR_BAD_SLOT); break; }
 
-		// Each slot starts page-aligned in the staging buffer so it can still
+		// Each entry starts page-aligned in the staging buffer so it can still
 		// be programmed independently when the whole lot is committed.
 		bufLen_ = (bufLen_ + 255u) & ~255u;
 		slotStart_ = bufLen_;
@@ -439,72 +471,40 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 
 	case MSG_UP_SLOTEND:
 		if (!uploading_) { SendErr(ERR_PROTOCOL); break; }
-		// Where this slot landed in the STAGING buffer; rewritten to a flash
+		// Where this entry landed in the STAGING buffer; rewritten to a flash
 		// offset when the buffer is committed.
-		hdr_.offset[slotVoice_] = slotStart_;
-		hdr_.size[slotVoice_]   = slotLen_;
-		touched_[slotVoice_]    = true;
+		hdr_.offset[slotEntry_] = slotStart_;
+		hdr_.size[slotEntry_]   = slotLen_;
+		touched_[slotEntry_]    = true;
 		SendAck(3, slotLen_);
 		break;
 
-	case MSG_UP_ALIAS:
-	{
-		// Point one voice at audio already sent in THIS session, rather than
-		// sending it twice. The header is a plain (offset,size) pair per slot,
-		// so nothing stops two voices naming the same bytes — mapping one
-		// recording onto two pads costs the flash of one.
-		if (!uploading_ || n < 3) { SendErr(ERR_PROTOCOL); break; }
-		uint8_t dst = p[1], src = p[2];
-		if (dst >= kNumVoices || src >= kNumVoices) { SendErr(ERR_BAD_SLOT); break; }
-		if (hdr_.size[src] == 0) { SendErr(ERR_PROTOCOL); break; }
-		hdr_.offset[dst] = hdr_.offset[src];
-		hdr_.size[dst]   = hdr_.size[src];
-		touched_[dst]    = touched_[src];
-		SendAck(8, hdr_.size[dst]);
-		break;
-	}
+	// NOTE: v1 had MSG_UP_ALIAS here, to point a second pad at audio already
+	// sent. The library model makes it unnecessary — two voices name the same
+	// entry and that IS the sharing, at no cost and with nothing to keep in
+	// step. MSG_UP_DROP is likewise gone, replaced by MSG_DELETE, which is
+	// about the library rather than about one pad.
 
 	case MSG_UP_KEEP:
 	{
-		// Keep audio ALREADY in the user region: payload voice, then 3 septets
-		// of its existing flash offset. Lets the browser re-send a partial set
-		// without destroying slots it no longer holds the files for.
-		if (!uploading_ || n < 5) { SendErr(ERR_PROTOCOL); break; }
-		uint8_t dst = p[1];
-		if (dst >= kNumVoices) { SendErr(ERR_BAD_SLOT); break; }
-		uint32_t off = (static_cast<uint32_t>(p[2]) << 14)
-		             | (static_cast<uint32_t>(p[3]) << 7)
-		             |  static_cast<uint32_t>(p[4]);
-
-		// Recover the size from the on-flash header: the browser knows where
-		// the audio is, not how long it is.
-		uint32_t sz = 0;
-		const UserSampleHeader *cur = UserHeader();
-		if (cur->magic == kUserMagic && cur->version == kUserVersion)
-			for (int v = 0; v < kNumVoices; v++)
-				if (cur->offset[v] == off && cur->size[v] > 0)
-					{ sz = cur->size[v]; break; }
-		if (!sz) { SendErr(ERR_PROTOCOL); break; }
-
-		hdr_.offset[dst] = off;      // already a flash offset
-		hdr_.size[dst]   = sz;
-		touched_[dst]    = false;    // so the commit rebase leaves it alone
-		SendAck(11, sz);
-		break;
-	}
-
-	case MSG_UP_DROP:
-	{
-		// Empty one voice as part of the current session, staged like anything
-		// else and committed at UP_END. MSG_CLEARSLOT does the same thing but
-		// commits and reboots at once, which would abort a sync mid-flight.
+		// Keep a library entry that is ALREADY in flash: payload entry index.
+		//
+		// SeedHeaderFromFlash() already copies every entry forward, so this is
+		// only needed by a browser that wants to be explicit about what it is
+		// preserving. It re-asserts the existing (offset,size) and marks the
+		// entry untouched so the commit rebase leaves the flash offset alone.
 		if (!uploading_ || n < 2) { SendErr(ERR_PROTOCOL); break; }
-		uint8_t v = p[1];
-		if (v >= kNumVoices) { SendErr(ERR_BAD_SLOT); break; }
-		hdr_.offset[v] = 0;
-		hdr_.size[v]   = 0;
-		touched_[v]    = false;
-		SendAck(9, 0);
+		uint8_t e = p[1];
+		if (e >= kMaxUserSamples) { SendErr(ERR_BAD_SLOT); break; }
+
+		const UserSampleHeader *cur = UserHeader();
+		if (cur->magic != kUserMagic || cur->version != kUserVersion ||
+		    cur->size[e] == 0) { SendErr(ERR_PROTOCOL); break; }
+
+		hdr_.offset[e] = cur->offset[e];   // already a flash offset
+		hdr_.size[e]   = cur->size[e];
+		touched_[e]    = false;            // so the rebase skips it
+		SendAck(11, hdr_.size[e]);
 		break;
 	}
 
@@ -531,84 +531,165 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 
 	case MSG_SET_SOURCE:
 	{
-		// payload: voice, bank — where bank is kSourceSynth (0x7F) for "leave
-		// this slot synthesised", else an index into the sample bank.
+		// payload: voice, src — a baked index, kUserSourceBase+n for a user
+		// library entry, or kWireSynth to synthesise the slot.
 		//
-		// RAM only, deliberately: this writes gVoiceSample[], which resets to
-		// the baked defaults on reboot. No flash write means no EnterUploadMode
-		// and no reboot, so the browser can flip a slot and hear it instantly.
+		// RAM only, deliberately: no flash write means no EnterUploadMode and
+		// no reboot, so the browser can flip a slot and hear it instantly.
+		// MSG_SAVE_MAP is what makes it survive a power cycle.
 		if (n < 3) { SendErr(ERR_PROTOCOL); break; }
-		int voice = p[1];
-		int bank  = (p[2] == kSourceSynth) ? -1 : p[2];
-		if (!SetVoiceSample(voice, bank)) { SendErr(ERR_BAD_SLOT); break; }
+		const int voice = p[1];
+		const int src = (p[2] == kWireSynth) ? kSourceSynth : p[2];
+		if (!SetVoiceSample(voice, src)) { SendErr(ERR_BAD_SLOT); break; }
 		SendAck(12, static_cast<uint32_t>(p[2]));
+		break;
+	}
+
+	case MSG_SAVE_MAP:
+	{
+		// Commit the slot map to flash WITHOUT rebooting.
+		//
+		// This is the one flash write the card can do while staying usable:
+		// the audio is untouched, so nothing needs re-reading afterwards, and
+		// the header sector is rewritten from the live gVoiceSample[]. Audio
+		// still has to stop for the erase — that is unavoidable — but there is
+		// no reason to reboot after it, and rebooting would drop USB and make
+		// "save" feel like a much bigger action than it is.
+		SeedHeaderFromFlash();
+		for (int v = 0; v < kNumVoices; v++)
+			hdr_.slotSource[v] = gVoiceSample[v];
+		writeOff_ = hdr_.totalBytes;
+
+		SendAck(13, 0);
+		FlushUsb(150);
+		EnterUploadMode();
+		CommitHeader();
+		watchdog_reboot(0, 0, 0);
 		break;
 	}
 
 	case MSG_SLOTS:
 	{
-		// Which voices hold USER audio, and what each voice is currently
-		// pointed at. Two septets of bitmask covers twelve slots; a single byte
-		// would silently drop slots 8-11.
-		static_assert(kNumVoices <= 14, "two septets of bitmask covers 14 slots");
-		uint8_t sl[3 + kNumVoices];
+		// What every voice is currently playing: one byte each, in the same
+		// encoding MSG_SET_SOURCE accepts. The browser mirrors this straight
+		// into its dropdowns, so what the page shows is what the card will
+		// actually play rather than a guess from the build-time defaults.
+		uint8_t sl[1 + kNumVoices];
 		uint32_t o = 0;
 		sl[o++] = MSG_SLOTS;
-
-		uint32_t bits = 0;
 		for (int v = 0; v < kNumVoices; v++)
-			if (VoiceIsUserLoaded(v)) bits |= (1u << v);
-		sl[o++] = static_cast<uint8_t>(bits & 0x7F);
-		sl[o++] = static_cast<uint8_t>((bits >> 7) & 0x7F);
-
-		// The live source assignment, so the browser shows what the card will
-		// actually play rather than what was baked at build time.
-		for (int v = 0; v < kNumVoices; v++)
-			sl[o++] = (gVoiceSample[v] < 0)
-			        ? kSourceSynth
+			sl[o++] = (gVoiceSample[v] == kSourceSynth)
+			        ? kWireSynth
 			        : static_cast<uint8_t>(gVoiceSample[v] & 0x7F);
 		Send(sl, o);
 		break;
 	}
 
-	case MSG_SLOTINFO:
+	case MSG_LIBRARY:
 	{
-		// Per-slot offset and size, for a browser that wants to send
-		// MSG_UP_KEEP for audio it is not re-uploading.
-		if (n < 2) { SendErr(ERR_PROTOCOL); break; }
-		uint8_t v = p[1];
-		if (v >= kNumVoices) { SendErr(ERR_BAD_SLOT); break; }
-
-		uint32_t off = 0, sz = 0;
+		// One MSG_LIBDET per FILLED entry, then a terminator with entry 0x7F.
+		//
+		// Sent as a burst rather than one-request-per-entry: 32 possible
+		// entries would otherwise be 32 round trips, and the browser's ack
+		// queue already copes with a burst (that is what it is for).
+		//
+		// PUMPED BETWEEN SENDS, and that is load-bearing rather than tidy.
+		// Send() only fills TinyUSB's TX FIFO, which is 256 bytes at full
+		// speed; a full library is 32 x 24 = 768, so writing the lot before
+		// letting tud_task() drain it would silently drop two thirds of the
+		// entries — and silently, because tud_midi_stream_write reports
+		// nothing when the buffer is full.
+		//
+		// Re-entering tud_task() here is safe in a way it is NOT inside
+		// Send(): this is a burst of replies with no incoming message being
+		// parsed around it, so there is no rx_ state to corrupt.
 		if (HaveUserSamples())
 		{
 			const UserSampleHeader *h = UserHeader();
-			off = h->offset[v];
-			sz  = h->size[v];
+			for (int e = 0; e < kMaxUserSamples; e++)
+			{
+				if (h->size[e] == 0) continue;
+				uint8_t d[5 + kNameLen];
+				uint32_t o = 0;
+				d[o++] = MSG_LIBDET;
+				d[o++] = static_cast<uint8_t>(e);
+				d[o++] = static_cast<uint8_t>((h->size[e] >> 14) & 0x7F);
+				d[o++] = static_cast<uint8_t>((h->size[e] >> 7)  & 0x7F);
+				d[o++] = static_cast<uint8_t>( h->size[e]        & 0x7F);
+				// Name, ASCII, NUL-padded. Masked to 7 bits because SysEx
+				// cannot carry anything wider — a name is only ever typed
+				// into a browser, so this costs nothing real.
+				for (int i = 0; i < kNameLen; i++)
+					d[o++] = static_cast<uint8_t>(h->name[e][i] & 0x7F);
+				Send(d, o);
+				tud_task();
+			}
 		}
-		uint8_t d[8] = { MSG_SLOTDET, v,
-		                 static_cast<uint8_t>((off >> 14) & 0x7F),
-		                 static_cast<uint8_t>((off >> 7)  & 0x7F),
-		                 static_cast<uint8_t>( off        & 0x7F),
-		                 static_cast<uint8_t>((sz >> 14) & 0x7F),
-		                 static_cast<uint8_t>((sz >> 7)  & 0x7F),
-		                 static_cast<uint8_t>( sz        & 0x7F) };
-		Send(d, 8);
+		uint8_t end[2] = { MSG_LIBDET, 0x7F };
+		Send(end, 2);
 		break;
 	}
 
-	case MSG_CLEARSLOT:
+	case MSG_NAME:
 	{
-		// Revert ONE voice to its baked sample, committed immediately. Rewrites
-		// the header sector only — the audio stays but is unreferenced.
+		// Name a library entry: payload entry, then ASCII. Staged in RAM and
+		// committed by the next MSG_SAVE_MAP or upload, so renaming several
+		// entries costs one flash write rather than one each.
 		if (n < 2) { SendErr(ERR_PROTOCOL); break; }
-		uint8_t v = p[1];
-		if (v >= kNumVoices) { SendErr(ERR_BAD_SLOT); break; }
+		const uint8_t e = p[1];
+		if (e >= kMaxUserSamples) { SendErr(ERR_BAD_SLOT); break; }
+
+		// DURING an upload, hdr_ is the session being built — do NOT reseed it
+		// (that would discard the entries staged so far) and do NOT commit
+		// (that would reboot the card half way through the transfer). The name
+		// rides along and lands with everything else at MSG_UP_END.
+		const bool inSession = uploading_;
+		if (!inSession) SeedHeaderFromFlash();
+
+		uint32_t i = 0;
+		for (; i + 2 < n && i < kNameLen - 1u; i++)
+			hdr_.name[e][i] = static_cast<char>(p[2 + i]);
+		hdr_.name[e][i] = '\0';
+
+		SendAck(14, e);
+		if (inSession) break;
+
+		// Standalone rename: commit now, because the user expects a rename to
+		// stick and there is no later commit coming. Header-only write — the
+		// audio is untouched.
+		writeOff_ = hdr_.totalBytes;
+		FlushUsb(150);
+		EnterUploadMode();
+		CommitHeader();
+		watchdog_reboot(0, 0, 0);
+		break;
+	}
+
+	case MSG_DELETE:
+	{
+		// Drop ONE library entry. The audio stays on the flash but becomes
+		// unreferenced, so this reclaims the SLOT rather than the space —
+		// uploads append, and only MSG_ERASE actually frees bytes.
+		//
+		// Any voice pointing at the deleted entry falls back to synth, here
+		// rather than at play time: a slot naming a missing entry would go
+		// silent, and a silent pad reads as a broken card.
+		if (n < 2) { SendErr(ERR_PROTOCOL); break; }
+		const uint8_t e = p[1];
+		if (e >= kMaxUserSamples) { SendErr(ERR_BAD_SLOT); break; }
 		if (!HaveUserSamples()) { SendAck(6, 0); break; }
 
-		memcpy(&hdr_, UserHeader(), sizeof(hdr_));
-		hdr_.offset[v] = 0;
-		hdr_.size[v]   = 0;
+		SeedHeaderFromFlash();
+		hdr_.offset[e] = 0;
+		hdr_.size[e]   = 0;
+		memset(hdr_.name[e], 0, kNameLen);
+
+		const int8_t gone = static_cast<int8_t>(kUserSourceBase + e);
+		for (int v = 0; v < kNumVoices; v++)
+		{
+			if (gVoiceSample[v] == gone) gVoiceSample[v] = kSourceSynth;
+			hdr_.slotSource[v] = gVoiceSample[v];
+		}
 		writeOff_ = hdr_.totalBytes;
 
 		SendAck(6, 0);
@@ -620,10 +701,10 @@ void __not_in_flash_func(WebUI::HandleSysex)(const uint8_t *msg, uint32_t len)
 	}
 
 	case MSG_ERASE:
-		// Wipe just the header sector: the audio stays but is unreferenced, so
-		// the card falls straight back to its baked samples. This is also how
-		// space is reclaimed — uploads append, so re-uploading the same voice
-		// repeatedly eventually fills the region, and this resets it to empty.
+		// Wipe the header sector: every entry and the slot map go with it, so
+		// the card falls straight back to its baked defaults. This is also the
+		// only way to reclaim SPACE — uploads append, so re-uploading the same
+		// sample repeatedly eventually fills the region.
 		SendAck(5, 0);
 		FlushUsb(200);
 		EnterUploadMode();

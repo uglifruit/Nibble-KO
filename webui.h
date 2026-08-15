@@ -39,26 +39,27 @@ namespace nko {
 enum : uint8_t {
 	MSG_HELLO       = 0x01,  // ui->fw: announce presence; fw replies MSG_INFO
 	MSG_INFO        = 0x02,  // fw->ui: version, capacity, what is loaded
-	MSG_UP_BEGIN    = 0x10,  // ui->fw: start upload session (stops audio; appends)
-	MSG_UP_SLOT     = 0x11,  // ui->fw: begin a voice slot; payload voice,len
-	MSG_UP_CHUNK    = 0x12,  // ui->fw: 7-bit-encoded audio for the current slot
-	MSG_UP_SLOTEND  = 0x13,  // ui->fw: this slot is complete
-	MSG_UP_END      = 0x14,  // ui->fw: whole upload done -> commit header, resume
+	MSG_UP_BEGIN    = 0x10,  // ui->fw: start upload session (appends; keeps playing)
+	MSG_UP_SLOT     = 0x11,  // ui->fw: begin a LIBRARY ENTRY; payload entry
+	MSG_UP_CHUNK    = 0x12,  // ui->fw: 7-bit-encoded audio for the current entry
+	MSG_UP_SLOTEND  = 0x13,  // ui->fw: this entry is complete
+	MSG_UP_END      = 0x14,  // ui->fw: whole upload done -> commit, reboot
 	MSG_UP_ACK      = 0x15,  // fw->ui: ready for more / progress
 	MSG_UP_ERR      = 0x16,  // fw->ui: something went wrong; payload = code
-	MSG_UP_ALIAS    = 0x17,  // ui->fw: point a slot at audio already sent
-	MSG_UP_DROP     = 0x18,  // ui->fw: empty a slot, staged (no reboot)
-	MSG_UP_BAKED    = 0x19,  // ui->fw: point a slot at the BUILT-IN sample
-	MSG_UP_KEEP     = 0x1A,  // ui->fw: keep audio already in the user region
-	MSG_ERASE       = 0x20,  // ui->fw: forget user samples, revert to baked
+	MSG_UP_KEEP     = 0x1A,  // ui->fw: keep a library entry already in flash
+	MSG_ERASE       = 0x20,  // ui->fw: forget ALL user samples, revert to baked
 	MSG_PLAY        = 0x21,  // ui->fw: leave USB mode and reboot into playing
-	MSG_CLEARSLOT   = 0x22,  // ui->fw: revert ONE slot to its baked sample
-	MSG_SLOTS       = 0x23,  // fw->ui: which slots currently hold user audio
-	MSG_SLOTINFO    = 0x24,  // ui->fw: request detail; fw replies MSG_SLOTDET
-	MSG_SLOTDET     = 0x25,  // fw->ui: per-slot offset+size
-	MSG_SET_SOURCE  = 0x26,  // ui->fw: point a slot at a bank entry, or -1 to
-	                          // synthesise it. Payload [voice, bank], one byte
-	                          // each, bank 0x7F meaning "synth" — see below.
+	MSG_SLOTS       = 0x23,  // fw->ui: what every voice is currently playing
+	MSG_LIBRARY     = 0x24,  // ui->fw: request the library; fw replies MSG_LIBDET
+	MSG_LIBDET      = 0x25,  // fw->ui: one entry's size and name
+	MSG_SET_SOURCE  = 0x26,  // ui->fw: point a voice at any sound.
+	                          // Payload [voice, src], where src is a baked
+	                          // index, kUserSourceBase+n for a user entry, or
+	                          // kWireSynth for "synthesise it". Takes effect
+	                          // immediately; MSG_SAVE_MAP makes it permanent.
+	MSG_SAVE_MAP    = 0x27,  // ui->fw: commit the slot map to flash, no reboot
+	MSG_NAME        = 0x28,  // ui->fw: name a library entry; payload entry+ASCII
+	MSG_DELETE      = 0x29,  // ui->fw: drop ONE library entry, commit, reboot
 	MSG_PROF_GET    = 0x30,  // ui->fw: send the timing peaks (profile builds)
 	MSG_PROF        = 0x31,  // fw->ui: peak cycles per bucket + overrun count
 };
@@ -83,16 +84,16 @@ enum : uint8_t {
 	ERR_NONE = 0, ERR_TOO_BIG = 1, ERR_BAD_SLOT = 2, ERR_PROTOCOL = 3,
 };
 
-/// MSG_SET_SOURCE's "this slot is synthesised" sentinel.
+/// MSG_SET_SOURCE's "this slot is synthesised" sentinel, ON THE WIRE.
 ///
 /// 0x7F, NOT 0xFF, and the distinction is not cosmetic: every byte inside a
-/// SysEx message must be 7-bit (0x00-0x7F), so 0xFF cannot travel on the wire
-/// at all — it would be read as a status byte and truncate the message. The
-/// firmware translates this to the -1 that gVoiceSample actually stores.
+/// SysEx message must be 7-bit (0x00-0x7F), so 0xFF cannot travel at all — it
+/// would be read as a status byte and truncate the message.
 ///
-/// 0x7F is otherwise unreachable as a real bank index, since kMaxSamples is
-/// 64, so there is no ambiguity to resolve.
-constexpr uint8_t kSourceSynth = 0x7F;
+/// The firmware translates this to samplestore.h's kSourceSynth (-1), which
+/// is what actually gets stored. Same concept, two encodings, two names on
+/// purpose — see that constant's comment.
+constexpr uint8_t kWireSynth = 0x7F;
 
 /// 7-bit encode/decode. Returns bytes written.
 /// Encoded length = ceil(srcLen/7)*8; decoded length <= (srcLen/8)*7.
@@ -147,8 +148,13 @@ private:
 	void CommitHeader();
 	void WriteStagedBuffer();  // erase+program the RAM buffer, then the header
 
+	/// Copy the on-flash directory into hdr_ so an edit starts from what the
+	/// card actually holds. Every handler that rewrites the header calls this
+	/// first — without it, changing one entry would blank all the others.
+	void SeedHeaderFromFlash();
+
 	bool     uploading_ = false;
-	uint8_t  slotVoice_ = 0;
+	uint8_t  slotEntry_ = 0;    // library entry currently being received
 	uint32_t writeOff_ = 0;     // next byte offset within the data area
 	uint32_t expected_ = 0;     // total bytes announced for this session
 
@@ -158,13 +164,15 @@ private:
 	uint32_t pageAddr_ = 0;
 
 	// The whole upload is staged in RAM before ANY flash is touched — see the
-	// file header. Sized as a placeholder; re-derive against actual RAM use.
+	// file header.
 	uint8_t  buf_[kUploadMax];
 	uint32_t bufLen_ = 0;
 	uint32_t baseOff_ = 0;      // append point from the existing header
-	uint32_t slotStart_ = 0;    // where the current slot began in buf_
+	uint32_t slotStart_ = 0;    // where the current entry began in buf_
 	uint32_t slotLen_ = 0;
-	bool     touched_[kNumVoices] = {};
+	// Which entries this session STAGED audio for, so the commit knows whose
+	// offsets are buffer-relative and need rebasing into flash offsets.
+	bool     touched_[kMaxUserSamples] = {};
 
 	// The header being built up as slots arrive; written last so a
 	// half-finished upload never leaves a valid-looking directory behind.

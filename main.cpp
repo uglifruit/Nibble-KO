@@ -1084,14 +1084,21 @@ private:
 	/// half-division is, so more chaos is finer AND busier rather than just
 	/// denser.
 	///
-	/// Gate WIDTH is in samples, counted down at 48kHz beside gateTimer_.
-	/// Loop ticks would have been the obvious unit and would be wrong: eight
-	/// of them is 42ms at 240bpm and 250ms at 40bpm, so the gates would grow
-	/// as the tempo fell. See CLAUDE.md's note on the two clocks.
+	/// Gate width is a FRACTION OF THE BEAT, converted to samples here and
+	/// counted down at 48kHz beside gateTimer_.
+	///
+	/// It was fixed milliseconds and that was wrong. A trigger should be
+	/// tempo-independent, but these gates are not triggers: patched into
+	/// Pulse In 2 their width IS how long each random effect is applied, so a
+	/// 20ms gate applied an effect for a click and nothing was audible.
+	/// Samples remain the COUNTING unit — loop ticks would make the countdown
+	/// itself tempo-dependent twice over — but the length is now derived from
+	/// Looper::SamplesPerBeat().
 	void __not_in_flash_func(GlitchTick)()
 	{
 		const int32_t chaos = ChaosVal();
 		const uint16_t pos  = loop_.Position();
+		const int32_t spb   = loop_.SamplesPerBeat();
 
 		// Ticks per grid division: 12 (16th), 16 (12th), 24 (8th).
 		const int32_t div = kTicksPerBeat
@@ -1122,8 +1129,17 @@ private:
 			// metronome.
 			if (odds > kGlitchMaxOdds) odds = kGlitchMaxOdds;
 
+			// Sized against the interval until the NEXT candidate, which is a
+			// whole beat while only beats are in play and one division once
+			// chaos has opened them up. Sizing both cases against the beat
+			// would leave the gate still high when the next division fired.
+			const int32_t span = (chaos > kChaosDivisionOpens)
+			                   ? (spb / kQuantNotesPerBeat[
+			                        static_cast<int>(loop_.CurrentQuantGrid())])
+			                   : spb;
+
 			if (rand_q16(rng_) < ((odds * 65536) / 4096))
-				glitch1Timer_ = kGlitchLongSamples;
+				glitch1Timer_ = (span * kGateLongNum) / kGateLongDen;
 		}
 
 		// --- CV Out 2: dense, syncopated ----------------------------------
@@ -1142,10 +1158,17 @@ private:
 			// Ratchets: at high chaos a hit sometimes becomes a short burst,
 			// which is the thing that actually sounds like a machine breaking
 			// rather than like a busier pattern.
+			// Candidates here are HALF-divisions, so that is the span to fit
+			// inside.
+			const int32_t half = spb
+			                   / (kQuantNotesPerBeat[
+			                        static_cast<int>(loop_.CurrentQuantGrid())] * 2);
+
 			if (rand_q16(rng_) < ((odds * 65536) / 4096))
 				glitch2Timer_ = (chaos > kChaosRatchetOpens
 				              && (xorshift32(rng_) & 3u) == 0)
-				              ? kGlitchTinySamples : kGlitchShortSamples;
+				              ? (half * kGateRatchetNum) / kGateRatchetDen
+				              : (half * kGateShortNum)   / kGateShortDen;
 		}
 	}
 

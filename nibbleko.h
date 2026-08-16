@@ -296,11 +296,28 @@ constexpr int32_t kChaosRatchetOpens = 2800;
 /// metronome. ~75% still reads as "constantly glitching" while keeping gaps.
 constexpr int32_t kGlitchMaxOdds = 3072;        // 75%
 
-/// Gate widths, in SAMPLES at 48kHz. Samples rather than loop ticks so a gate
-/// does not stretch as the tempo falls — see GlitchTick()'s comment.
-constexpr int32_t kGlitchLongSamples  = kSampleRate / 50;    // 20ms, easy to catch
-constexpr int32_t kGlitchShortSamples = kSampleRate / 200;   // 5ms
-constexpr int32_t kGlitchTinySamples  = kSampleRate / 500;   // 2ms, ratchets
+/// Gate LENGTHS, as a fraction of the DIVISION the gate fired on.
+///
+/// These were fixed millisecond figures (20ms/5ms/2ms) and that was wrong. A
+/// trigger wants to be tempo-independent; a GATE whose width IS the effect's
+/// duration has to be musical, or patching CV Out into Pulse In 2 applies
+/// each random effect for a click and nothing is audible. Reported from the
+/// bench as "they need to last meaningful musical divisions".
+///
+/// A fraction of the DIVISION, not of the beat, and that distinction is
+/// load-bearing: candidates arrive every division once chaos opens them up,
+/// so a beat-long gate would still be high when the next one fired. The line
+/// would sit permanently high and stop being a gate at all — checked
+/// arithmetically across 40-240bpm and every grid, where a 7/8-beat gate
+/// overran the next candidate in all nine combinations.
+///
+/// Under 1 in each case, so consecutive gates always have a gap rather than
+/// merging into one continuous high.
+///
+///     samples = (samplesPerDivision * numerator) / denominator
+constexpr int32_t kGateLongNum    = 3, kGateLongDen    = 4;  // most of the division
+constexpr int32_t kGateShortNum   = 1, kGateShortDen   = 2;  // half
+constexpr int32_t kGateRatchetNum = 1, kGateRatchetDen = 4;  // a stab
 
 /// Gate high level for CV Out. About 5V on this hardware, which is
 /// comfortably above Pulse In's threshold when self-patched.

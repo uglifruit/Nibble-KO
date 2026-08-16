@@ -7,10 +7,11 @@ module — with a browser sample manager.**
 *Four buttons. Ten voltages. Twelve drums, yours to fill.*
 
 > **Status: in development, playable on hardware.** Drums, the looper, mute
-> groups, twelve performance effects, three pattern slots and sample playback
-> all work. Calibration and patterns are not yet saved to flash, so both are
-> lost at power-off, and the browser app is not written. See
-> [CLAUDE.md](CLAUDE.md) for exactly what's here and what isn't.
+> groups, twelve performance effects, three pattern slots, sample playback,
+> the browser sample manager and flash-saved calibration all work. Patterns
+> are still RAM-only, so they are lost at power-off, and the CV expansion is
+> written but not yet bench-tested. See [CLAUDE.md](CLAUDE.md) for exactly
+> what's here and what isn't.
 
 A program card for the [Music Thing Modular Workshop System
 Computer](https://www.musicthing.co.uk/workshopsystem/) that expands the
@@ -63,7 +64,7 @@ And with a **pair** held, one-shot actions:
 | **A + B** | **Undo** — revert the last recording pass (not pattern stores; see below) |
 | **A + C** | **Quantise** — cycle the record grid: 16th → 12th → 8th |
 | **C + D** | **Play / Stop** |
-| **B + D** | **WebUI** — hand the card over to USB *(not yet implemented)* |
+| **B + D** | **WebUI** — hand the card over to USB for the browser setup tool |
 
 The adjacent pairs carry what you reach for mid-take. The WebUI takes the
 awkward diagonal, since it is a setup activity done with both hands free.
@@ -307,6 +308,11 @@ so they always agree with what the card is recording to. CV Out 1 is sparse,
 weighted hard toward the downbeat, with longer gates — usable as an accent
 track on its own. CV Out 2 is dense, syncopated, deliberately skipping the
 beat that CV Out 1 already owns.
+
+These are **gates, not triggers**: each one lasts most of the division it
+fired on, so it scales with the tempo and is long enough to be a musical
+effect rather than a click. That matters because the gate's width is exactly
+how long Pulse In 2 applies its random effect for.
 
 > **The patch worth trying first:** CV Out 2 into Pulse In 2. The card's own
 > glitch generator now fires its own random effects, and Audio In 2 is the

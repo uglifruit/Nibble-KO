@@ -502,6 +502,29 @@ public:
 		return true;
 	}
 
+	/// How many AUDIO SAMPLES one beat currently lasts.
+	///
+	/// For anything that must be a musical LENGTH rather than a moment — the
+	/// glitch gates on CV Out 1/2, whose width is how long a random effect is
+	/// applied for. Derived from tickInc_ so it follows an external clock as
+	/// readily as the tempo knob.
+	///
+	///     tickInc_ is Q16 loop-ticks per control step, so
+	///     control steps per beat = (kTicksPerBeat << 16) / tickInc_
+	///     and one control step is kCtrlDiv samples.
+	///
+	/// The Q16 scale is written as a shift rather than fastmath.h's kQ16One,
+	/// so this header does not gain an include for one constant.
+	///
+	/// Falls back to a 120bpm beat before any tempo has been set, so a caller
+	/// never divides by zero or gets an absurd length on the first tick.
+	int32_t SamplesPerBeat() const
+	{
+		if (tickInc_ <= 0) return kSampleRate / 2;      // 120bpm
+		return static_cast<int32_t>(
+			((static_cast<int64_t>(kTicksPerBeat) << 16) * kCtrlDiv) / tickInc_);
+	}
+
 private:
 	void Insert(const LoopEvent &ev);
 	void Remove(int i);

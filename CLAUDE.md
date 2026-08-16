@@ -319,6 +319,13 @@ trusting them:
   checked arithmetically (5% unpatched, 75% ceiling, divisions widening at
   `kChaosDivisionOpens`, ratchets at `kChaosRatchetOpens`) but never heard.
   Expect to move those constants in `nibbleko.h` after playing it.
+- **Glitch gate LENGTH is a fraction of the division it fired on**, not of
+  the beat and not a fixed millisecond figure. Both of those were tried and
+  both were wrong: fixed ms gave click-length gates that applied a random
+  effect for too short a time to hear, and beat-length gates overran the next
+  candidate in all nine tempo/grid combinations, holding the line permanently
+  high. If these are retuned, check the gate still fits its interval at
+  240bpm on the 16th grid — the tightest case.
 - **An intermittent fault is recorded in `docs/OPEN-BUGS.md`**, seen once and
   never reproduced.
 

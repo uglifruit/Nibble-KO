@@ -11,19 +11,29 @@ where every voice is independently synthesised or sample-based, chosen and
 uploaded from a browser WebUI — the sample-management pattern from
 `../WorkshopBio`.
 
-## Current status: PLAYABLE, TESTED ON HARDWARE
+## Current status: RELEASED, v1.0.1
 
-Builds to `build/nibbleko.uf2` — **7.4% flash, 83% RAM**. Confirmed working
-on a Workshop Computer: drums, the four-bar looper with lossless overdub,
-three mute groups, twelve performance effects with two-lane recording, three
-pattern slots, and sample playback from a baked bank.
+Builds to `build/nibbleko.uf2` — **7.6% flash, 84.7% RAM**. Everything
+except pattern persistence is played and confirmed on a Workshop Computer:
+drums, the four-bar looper with lossless overdub, three mute groups, twelve
+performance effects with two-lane recording, three pattern slots, sample
+playback, the browser sample manager (connect, assign, upload, rename,
+delete, erase), flash-saved calibration, and the whole CV expansion
+including the CV Out 2 → Pulse In 2 self-patch.
+
+**Shipped.** `info.yaml` is `draft: false`, `Status: Released`. The card is
+in the community catalogue as `releases/102_Nibble-KO` in
+`TomWhitwell/Workshop_Computer` — merged there at 1.0.0 (PR #362), with
+1.0.1 following in PR #365. Own repo: `uglifruit/Nibble-KO`.
 
 **The RAM figure is the WebUI's 160KB upload staging buffer**, not a leak.
 It only fits because USB is modal — nothing instantiates `WebUI` until
 switch+B+D, by which point the card has stopped playing. Same figure
 WorkshopBio ships on identical hardware. Watch `--print-memory-usage`.
 
-**USB is written but NOT yet hardware-tested** — see "Untested" below.
+**The one deliberate gap is pattern persistence** — slots are RAM-only and
+die at power-off. That plus loop length and JSON pattern export/import is
+the 1.1 roadmap; see "What's NOT here" below, where it is already item 1.
 
 **Calibration is flash-persisted** (`calibstore.h`) — a normal boot loads the
 last saved levels and is playable within the splash; only an alt-boot (switch
@@ -111,7 +121,7 @@ Ported and adapted from `../WoskshopButtons` (NIBBLE) and `../WorkshopBio`
 | `samplestore.h` | Written new, wired in | `ResolveSample()` is called per hit from `DrumKit::TriggerVoice` |
 | `calibstore.h` | Written new, wired in | Flash-persisted calibration, sibling layout to `samplestore.h`; `SaveCalibration()`/`LoadSavedCalibration()` called from `main.cpp`'s `LearnTick()` and boot splash |
 | `webui.h` | Written new | WorkshopBio's message set on 12 flat slots + `MSG_SET_SOURCE` |
-| `webui.cpp` | Ported, **untested on hardware** | WorkshopBio's, with mode×variant collapsed to flat voices |
+| `webui.cpp` | Ported, tested on hardware | WorkshopBio's, with mode×variant collapsed to flat voices |
 | `tusb_config.h`, `usb_descriptors.c` | Ported | WorkshopBio's, byte-identical but for the product string |
 | `web/index.html` | Written new | Mockup's visual shell + WorkshopBio's connection/upload logic |
 | `tools/importbank.py`, `mksamples.py` | Written new | WAV → numbered bank entries; `importwav.py` supplies the DSP |
@@ -121,7 +131,7 @@ Ported and adapted from `../WoskshopButtons` (NIBBLE) and `../WorkshopBio`
 | `ComputerCard.h`, `pico_sdk_import.cmake` | Vendored, byte-identical | NIBBLE — **do not edit** |
 | `main.cpp` | Written new | The mode machine, Drum Performance, LEDs, calibration. Structure follows NIBBLE's `main.cpp` closely |
 | `CMakeLists.txt` | Written new | Builds, with TinyUSB + `pico_multicore` and the `checksize` guard |
-| `info.yaml` | Written new | `draft: true`, `Status: In development` |
+| `info.yaml` | Written new | `draft: false`, `Status: Released`, v1.0.1 |
 
 ## The control surface
 
@@ -286,6 +296,14 @@ Roughly in dependency order:
    music, so it stays card state, persists across pattern recalls, and is
    outside Undo. Do not "finish" it.
 
+6. **The published Map artifact's layout was never fixed.** Asked for on the
+   bench and deliberately deferred: lay the ABCD gesture pads out as a 2×2
+   grid and the LEDs as 2×3 (matching `nibbleko.h`'s stated physical layout,
+   `0 1 / 2 3 / 4 5`), and set the type larger. This applies to the
+   standalone **mockup artifact**, not `web/index.html` — the shipped tool
+   already got the 2×2 pads and the +3px type. Cosmetic, no code depends on
+   it.
+
 ## USB: what is proven, and what is not
 
 **Confirmed on hardware, v2 library protocol:** entering WebUI mode
@@ -368,7 +386,7 @@ ever built against each other or diffed side by side.
 | `fastmath.h/.cpp` | Fixed-point helpers, sine LUT, PRNG |
 | `ComputerCard.h` | Vendored MTM library — **do not edit** |
 | `tools/` | Python verification models, `syntax.sh`, `checkyaml.py`, sample pipeline |
-| `info.yaml` | Workshop System card registry metadata (`draft: true`) |
+| `info.yaml` | Workshop System card registry metadata (`draft: false`, released) |
 | `docs/LESSONS.md` | NIBBLE's handover doc — **read this first**, most of the reasoning behind what's ported here lives there |
 
 ## Starting work on this card

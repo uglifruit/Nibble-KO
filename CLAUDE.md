@@ -177,6 +177,23 @@ for values that only play, and destructive for values that decide whether to
 silently overwrote a pattern slot. **Read `SwitchVal()` directly** in a
 button handler rather than the cached flag.
 
+### Reverse and TapeStop are no longer the same shape
+
+They were grouped as "the transport effects, applied at trigger time" — and
+that was right for Reverse, which has to know where a recording ENDS before
+it can play backwards from it, so it can only ever be set as a voice starts.
+
+TapeStop had no such constraint. `SetTapeStop()` just installs a Q16 ramp, so
+applying it to a voice already ringing is legal and cheap — and a real tape
+stop grabs whatever is spinning. Applied only at trigger time, holding D+B
+during playback did nothing audible between recorded hits, which is exactly
+how it was reported from the bench.
+
+It now does both: `DrumKit::TapeStopAll()` brakes what is sounding, fired on
+the effect's RISING EDGE from `PlayControl()`, while `TriggerVoice()` still
+catches hits that start during the hold. **Edge, not level** — calling it
+every tick reinstalls the ramp at full scale and the kit never stops.
+
 ### `Current()` versus `Sounding()` is not a style choice
 
 `Sounding()` reports the pair for as long as the ghost is armed — i.e. after
@@ -293,8 +310,15 @@ trusting them:
 - **Gate is not tempo-synced.** Its rate divides the sample clock, so it does
   not lock to the loop. Deliberate — a gate that slowed with the pattern is
   just tremolo — but worth revisiting.
-- **CV Out 1 and 2 output nothing.** Deliberate — NIBBLE's bassline is gone
-  and no replacement has been chosen.
+- **The CV expansion is UNTESTED on hardware.** Six jacks changed meaning at
+  once (see "Patching it" in README.md), and every path is gated on
+  `Connected()`, which needs `EnableNormalisationProbe()` — newly called in
+  `main()`. The first bench test should be **nothing patched**, confirming
+  the card behaves exactly as it did before.
+- **The glitch probabilities are tuned on paper, not by ear.** The curve was
+  checked arithmetically (5% unpatched, 75% ceiling, divisions widening at
+  `kChaosDivisionOpens`, ratchets at `kChaosRatchetOpens`) but never heard.
+  Expect to move those constants in `nibbleko.h` after playing it.
 - **An intermittent fault is recorded in `docs/OPEN-BUGS.md`**, seen once and
   never reproduced.
 

@@ -268,6 +268,46 @@ static inline int32_t SemisToMillivolts(int32_t semis)
 }
 
 // ---------------------------------------------------------------------------
+// CV expansion
+// ---------------------------------------------------------------------------
+//
+// The glitch generators on CV Out 1 and 2, and the chaos level that drives
+// them. See main.cpp's GlitchTick().
+
+/// Chaos with nothing patched into Audio In 2: about 5%, one division in
+/// twenty. Not zero, so the glitch outputs always do something — an output
+/// that is silent until you patch a control into it reads as broken.
+constexpr int32_t kChaosDefault = 205;          // 5% of 4095
+
+/// Above this chaos, CV Out 1 stops being beats-only and starts considering
+/// every grid division. Below it the sparse stream is strictly on the beat.
+constexpr int32_t kChaosDivisionOpens = 1200;
+
+/// Above this, CV Out 2's hits can become ratchets — a short burst instead of
+/// one gate. This is what makes high chaos sound like a machine failing
+/// rather than merely a busier pattern.
+constexpr int32_t kChaosRatchetOpens = 2800;
+
+/// Ceiling on firing probability, out of 4096.
+///
+/// Never 4096. A stream that fires on EVERY candidate is a pulse train, not
+/// a random one — and the downbeat, which carries extra weighting, would hit
+/// every bar at full chaos and turn the least predictable setting into a
+/// metronome. ~75% still reads as "constantly glitching" while keeping gaps.
+constexpr int32_t kGlitchMaxOdds = 3072;        // 75%
+
+/// Gate widths, in SAMPLES at 48kHz. Samples rather than loop ticks so a gate
+/// does not stretch as the tempo falls — see GlitchTick()'s comment.
+constexpr int32_t kGlitchLongSamples  = kSampleRate / 50;    // 20ms, easy to catch
+constexpr int32_t kGlitchShortSamples = kSampleRate / 200;   // 5ms
+constexpr int32_t kGlitchTinySamples  = kSampleRate / 500;   // 2ms, ratchets
+
+/// Gate high level for CV Out. About 5V on this hardware, which is
+/// comfortably above Pulse In's threshold when self-patched.
+constexpr int16_t kCvGateHigh = 1700;
+constexpr int16_t kCvGateLow  = -2048;
+
+// ---------------------------------------------------------------------------
 // Flash
 // ---------------------------------------------------------------------------
 //

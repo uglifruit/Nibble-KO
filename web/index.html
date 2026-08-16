@@ -549,17 +549,33 @@ footer {
   <!-- I/O -->
   <div class="view" id="view-io">
     <div id="io-content">
+      <p><strong>Inputs</strong></p>
+      <hr>
+      <p>CV in 1 &mdash; <span class="io-desc">Four Voltages output 1 &mdash; the instrument itself. Calibrated on an alt-boot and saved to flash.</span></p>
+      <hr>
+      <p>CV in 2 &mdash; <span class="io-desc">takes over the Main knob while patched, so whatever Main does in the current mode is under voltage. Overrides rather than offsets &mdash; a cable wins.</span></p>
+      <hr>
+      <p>Pulse in 1 &mdash; <span class="io-desc">external clock, one edge per beat</span></p>
+      <hr>
+      <p>Pulse in 2 &mdash; <span class="io-desc">while HIGH, a random effect is applied. The gate's width is how long it lasts; it sits below your hands and below anything recorded.</span></p>
+      <hr>
+      <p>Audio in 1 &mdash; <span class="io-desc">depth of that random effect</span></p>
+      <hr>
+      <p>Audio in 2 &mdash; <span class="io-desc">chaos &mdash; how busy and how fine the glitch outputs are. Unpatched sits at about 5%.</span></p>
+      <hr>
+      <p style="margin-top:28px"><strong>Outputs</strong></p>
+      <hr>
       <p>Audio out 1 &amp; 2 &mdash; <span class="io-desc">the drum bus, mono, both jacks identical</span></p>
+      <hr>
+      <p>CV out 1 &mdash; <span class="io-desc">glitch gates, sparse and weighted toward the downbeat &mdash; usable as an accent track on its own</span></p>
+      <hr>
+      <p>CV out 2 &mdash; <span class="io-desc">glitch gates, dense and syncopated. Patch it into Pulse in 2 and the card glitches itself.</span></p>
       <hr>
       <p>Pulse out 1 &mdash; <span class="io-desc">gate, one pulse per hit</span></p>
       <hr>
       <p>Pulse out 2 &mdash; <span class="io-desc">click, one pulse per beat</span></p>
       <hr>
-      <p>CV out 1 &amp; 2 &mdash; <span class="io-desc">unassigned</span></p>
-      <hr>
-      <p>CV in 1 &mdash; <span class="io-desc">Four Voltages output 1 &mdash; the instrument itself. Calibrated on an alt-boot and saved to flash.</span></p>
-      <hr>
-      <p>Pulse in 1 &mdash; <span class="io-desc">external clock, one edge per beat</span></p>
+      <p style="margin-top:28px"><strong>Knobs</strong></p>
       <hr>
       <p>Main / X / Y &mdash; <span class="io-desc">DJ filter (or FX depth) / tempo 40&ndash;240bpm / kit character</span></p>
     </div>

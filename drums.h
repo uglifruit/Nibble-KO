@@ -249,11 +249,30 @@ public:
 	/// rather than a control.
 	///
 	/// `reverse` and `tapeStopSamples` are the D-bank transport effects,
-	/// applied as the voice STARTS — which is the only time they can be,
-	/// since both change how the sound is produced rather than filtering it
-	/// afterwards. Pass 0 for no tape stop.
+	/// applied as the voice STARTS. Pass 0 for no tape stop.
+	///
+	/// REVERSE genuinely can only be done here: it has to know where the
+	/// recording ends before it can play backwards from it. Tape stop does
+	/// not — see TapeStopAll(), which is how holding D+B brakes the kit.
 	void TriggerVoice(int8_t voice, int32_t yKnob,
 	                  bool reverse = false, int32_t tapeStopSamples = 0);
+
+	/// Brake every voice that is currently sounding.
+	///
+	/// TriggerVoice() only reaches hits that START while D+B is held, which
+	/// is right for a KO-style momentary effect but wrong for a tape stop:
+	/// a real one grabs whatever is already spinning. Between recorded hits
+	/// there is nothing to attach to, so on playback the effect appeared to
+	/// do nothing at all — reported from the bench.
+	///
+	/// Cheap and safe because SetTapeStop() is a pure state setter: it
+	/// installs a Q16 ramp and reads nothing that was decided at trigger
+	/// time.
+	///
+	/// Call on the RISING EDGE of the effect only. Calling it every tick
+	/// re-installs the ramp at full scale continuously, so the rate never
+	/// actually falls and the kit simply plays on.
+	void TapeStopAll(int32_t fallSamples);
 
 	/// Sum of every active voice, soft-clipped. Ten voices at full scale would
 	/// reach +/-20470, so clipping is mandatory rather than a nicety.

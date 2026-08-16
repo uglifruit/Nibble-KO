@@ -101,6 +101,29 @@ static inline bool IsTriggerFx(Fx f)
 /// owns an automation lane, so up to four recorded effects can overlap.
 constexpr int kNumFxSlots = kNumSingles;
 
+/// Roll a random effect, and say which SLOT it belongs in.
+///
+/// Rolls a GESTURE rather than an effect index, which is what makes the slot
+/// fall out for free: the table's row IS the shift, and the shift IS the
+/// slot. Picking an effect and then choosing a slot for it separately would
+/// break two things quietly — FxRack::TriggerFx() only looks in slot D for
+/// Reverse/TapeStop, and FxRack::Timing() only looks in slot C for
+/// Stutter/Flam, so either landing anywhere else would simply not fire.
+///
+/// The diagonal is None (a button cannot shift itself), so re-roll the tap
+/// rather than returning an effect that does nothing. Three of sixteen
+/// gestures are on the diagonal, so this almost never loops more than once.
+///
+/// `rng` is the caller's PRNG state — see fastmath.h, no global generator.
+static inline Fx RandomFx(uint32_t &rng, int8_t &slotOut)
+{
+	const int8_t shift = static_cast<int8_t>(xorshift32(rng) & 3u);
+	int8_t tap;
+	do { tap = static_cast<int8_t>(xorshift32(rng) & 3u); } while (tap == shift);
+	slotOut = shift;
+	return kFxForGesture[shift][tap];
+}
+
 /// Shift C's slot is where the rhythmic effects live. It is no longer
 /// exclusive: half-time and double-time were the only pair that genuinely
 /// contradicted each other, and they are gone. Stutter and flam act on

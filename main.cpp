@@ -577,6 +577,16 @@ public:
 
 		PulseOut2(clickTimer_ > 0);
 		if (clickTimer_ > 0) clickTimer_--;
+
+		// The glitch gates, same countdown idiom as the two above. Written
+		// every sample rather than only on a change: CVOut1/2 are cheap
+		// register writes and RAM-resident, unlike CVOutMillivolts() which
+		// CLAUDE.md flags as flash-resident and unsafe in the hot loop.
+		CVOut1(glitch1Timer_ > 0 ? kCvGateHigh : kCvGateLow);
+		if (glitch1Timer_ > 0) glitch1Timer_--;
+
+		CVOut2(glitch2Timer_ > 0 ? kCvGateHigh : kCvGateLow);
+		if (glitch2Timer_ > 0) glitch2Timer_--;
 	}
 
 	/// Upload progress, driven from CORE 1 while core 0 is parked.
@@ -879,9 +889,12 @@ private:
 		// The D-bank transport effects are armed HERE rather than in the audio
 		// path, because both change how a voice is produced: reverse starts it
 		// at the far end, tape-stop starts it with a rate that will wind down.
-		// Applying them at trigger time is also what makes them affect hits
-		// that START while the effect is held and leave ones already sounding
-		// alone — which is how a KO/PO-12 FX button behaves.
+		//
+		// This is what catches hits that START while the effect is held —
+		// KO/PO-12 behaviour, and the only way REVERSE can work at all, since
+		// it has to know where a recording ends. Tape stop ALSO reaches back
+		// and brakes voices already sounding; that happens on the effect's
+		// rising edge in PlayControl(), not here. See DrumKit::TapeStopAll().
 		const Fx tfx = fx_.TriggerFx();
 		const bool reverse = (tfx == Fx::Reverse);
 		int32_t stopSamples = 0;
@@ -1020,6 +1033,136 @@ private:
 	// for something else. Also note the mode-reminder LED pulses the mode's
 	// single shift button, which stops meaning anything with four of them.
 
+	/// The MAIN knob, or CV In 2 if something is patched there.
+	///
+	/// CV In 2 overrides the knob entirely rather than offsetting it — the
+	/// same convention Pulse In 1 already uses for the tempo knob, so "a
+	/// cable wins" is one rule across the card rather than two.
+	///
+	/// Every Main read goes through here, and that matters: Main means
+	/// different things in different modes (DJ filter, or an effect's depth
+	/// in FX), and those two paths diverge at the RAW read rather than after
+	/// it. Without a single funnel the override would have had to be
+	/// duplicated at each site, and the two would drift.
+	///
+	/// CV in is bipolar (-2048..2047), knobs are unipolar (0..4095), so a
+	/// full-swing bipolar CV covers the knob's whole travel.
+	int32_t __not_in_flash_func(MainVal)()
+	{
+		if (!Connected(Input::CV2)) return KnobVal(Knob::Main);
+		int32_t v = CVIn2() + 2048;
+		return (v < 0) ? 0 : (v > 4095) ? 4095 : v;
+	}
+
+	/// CHAOS, 0..4095. Audio In 2 if patched, else a deliberate trickle.
+	///
+	/// Unpatched sits at kChaosDefault rather than zero so CV Out 1/2 always
+	/// do SOMETHING — a card whose glitch outputs are silent until you patch
+	/// a control voltage into them looks broken. One in twenty divisions is
+	/// sparse enough to read as an accent rather than a fault.
+	int32_t __not_in_flash_func(ChaosVal)()
+	{
+		if (!Connected(Input::Audio2)) return kChaosDefault;
+		int32_t v = AudioIn2() + 2048;
+		return (v < 0) ? 0 : (v > 4095) ? 4095 : v;
+	}
+
+	/// The two glitch gate streams, one loop tick each.
+	///
+	/// Both roll against the SAME chaos value but ask different questions, so
+	/// one is an accent track and the other is mayhem:
+	///
+	///   CV Out 1  sparse. Only strong divisions, weighted hard toward the
+	///             downbeat, long gates. Musical on its own.
+	///   CV Out 2  dense. Off-beats and finer subdivisions, short gates.
+	///             This is the one to patch into Pulse In 2 for chaos.
+	///
+	/// Divisions come from the LIVE quantise grid, so the glitching always
+	/// agrees with what the card is recording to — change the grid with
+	/// switch+A+C and these follow. Chaos widens the pool as well as raising
+	/// the odds: at the bottom only beats are candidates, at the top every
+	/// half-division is, so more chaos is finer AND busier rather than just
+	/// denser.
+	///
+	/// Gate WIDTH is in samples, counted down at 48kHz beside gateTimer_.
+	/// Loop ticks would have been the obvious unit and would be wrong: eight
+	/// of them is 42ms at 240bpm and 250ms at 40bpm, so the gates would grow
+	/// as the tempo fell. See CLAUDE.md's note on the two clocks.
+	void __not_in_flash_func(GlitchTick)()
+	{
+		const int32_t chaos = ChaosVal();
+		const uint16_t pos  = loop_.Position();
+
+		// Ticks per grid division: 12 (16th), 16 (12th), 24 (8th).
+		const int32_t div = kTicksPerBeat
+		                  / kQuantNotesPerBeat[static_cast<int>(loop_.CurrentQuantGrid())];
+
+		const bool onBeat     = (pos % kTicksPerBeat) == 0;
+		const bool onDivision = (pos % div) == 0;
+		const bool onHalfDiv  = (div >= 2) && ((pos % (div / 2)) == 0);
+
+		// --- CV Out 1: sparse, beat-anchored ------------------------------
+		//
+		// Candidates are beats always, and other divisions only as chaos
+		// rises. The downbeat gets a big weighting bonus so the stream keeps
+		// implying the bar even when it is firing often.
+		if (onBeat || (onDivision && chaos > kChaosDivisionOpens))
+		{
+			// Chaos IS the probability, not half of it: the spec's "1 in
+			// twenty" has to mean 5% at the default or the stream is silent
+			// for bars at a time. The ceiling widens the pool instead — see
+			// kChaosDivisionOpens — so the knob still does more than get
+			// louder.
+			int32_t odds = chaos;
+			if (onBeat)  odds += odds >> 1;                      // favour the beat
+			if (pos == 0) odds += odds >> 1;                     // favour bar one
+
+			// Never certain. Bar one at full chaos would otherwise hit every
+			// single time, which turns the least predictable setting into a
+			// metronome.
+			if (odds > kGlitchMaxOdds) odds = kGlitchMaxOdds;
+
+			if (rand_q16(rng_) < ((odds * 65536) / 4096))
+				glitch1Timer_ = kGlitchLongSamples;
+		}
+
+		// --- CV Out 2: dense, syncopated ----------------------------------
+		//
+		// Deliberately SKIPS the beat itself: the sparse stream already owns
+		// the downbeat, and a dense track that also lands there just thickens
+		// it. Off-beats and half-divisions are what make it read as glitch.
+		const bool candidate2 = onHalfDiv && !onBeat;
+		if (candidate2)
+		{
+			// Same scale as the sparse stream, but every off-beat and
+			// half-division is a candidate rather than only the strong ones,
+			// so the same chaos value lands far more hits here.
+			int32_t odds = chaos;
+			if (odds > kGlitchMaxOdds) odds = kGlitchMaxOdds;
+			// Ratchets: at high chaos a hit sometimes becomes a short burst,
+			// which is the thing that actually sounds like a machine breaking
+			// rather than like a busier pattern.
+			if (rand_q16(rng_) < ((odds * 65536) / 4096))
+				glitch2Timer_ = (chaos > kChaosRatchetOpens
+				              && (xorshift32(rng_) & 3u) == 0)
+				              ? kGlitchTinySamples : kGlitchShortSamples;
+		}
+	}
+
+	/// Depth for the RANDOM effect: Audio In 1 if patched, else the slot's
+	/// own curve.
+	///
+	/// Audio In 1 is bipolar like every other input here, so it is folded to
+	/// the same 0..4095 the knobs use. Using it as a slow CV is the intended
+	/// case; feeding it actual audio makes the depth judder at signal rate,
+	/// which is either a mistake or exactly what you wanted.
+	int32_t __not_in_flash_func(RandomFxDepth)(int32_t fallback)
+	{
+		if (!Connected(Input::Audio1)) return fallback;
+		int32_t v = AudioIn1() + 2048;
+		return (v < 0) ? 0 : (v > 4095) ? 4095 : v;
+	}
+
 	/// One slot's parameter value: the hand's if that slot's shift is held,
 	/// otherwise whatever the loop is replaying for it.
 	///
@@ -1030,7 +1173,7 @@ private:
 	int32_t __not_in_flash_func(FxSlotDepth)(int8_t slot)
 	{
 		if (slot < 0 || slot >= kNumFxSlots) return 2048;
-		return (slot == fxParShift_) ? KnobVal(Knob::Main)
+		return (slot == fxParShift_) ? MainVal()
 		                             : fxParPlayback_[slot];
 	}
 
@@ -1236,16 +1379,62 @@ private:
 		// effect arrived. One source of truth: a replayed effect sweeps
 		// exactly as it did when performed, and a live one reads the same
 		// curve the hand is drawing.
+		// PULSE IN 2 fires a random effect for as long as it is HIGH.
+		//
+		// Level-sensitive, not edge-triggered: the incoming gate's WIDTH is
+		// the effect's duration, which is what makes CV Out 1 -> Pulse In 2
+		// work as a self-glitching patch. The effect is rolled once on the
+		// rising edge and held — re-rolling every tick would be noise rather
+		// than a glitch.
+		if (Connected(Input::Pulse2))
+		{
+			const bool now = PulseIn2();
+			if (now && !randomFxOn_)
+				randomFxEffect_ = RandomFx(rng_, randomFxSlot_);
+			else if (!now)
+				randomFxEffect_ = Fx::None;
+			randomFxOn_ = now;
+		}
+		else
+		{
+			randomFxEffect_ = Fx::None;
+			randomFxOn_ = false;
+		}
+
 		for (int8_t s = 0; s < kNumFxSlots; s++)
 		{
 			const int32_t depth = FxSlotDepth(s);
+
+			// The random effect sits BELOW both the hand and playback, so a
+			// patched Pulse In 2 colours the slots nobody is using rather
+			// than fighting for one. Its depth comes from Audio In 1 when
+			// that is patched, else from the slot's own curve like anything
+			// else.
+			const bool randomHere = (randomFxEffect_ != Fx::None && s == randomFxSlot_);
 
 			if (s == fxLiveSlot_)
 				fx_.SetSlot(s, fxCurrent_, depth);
 			else if (fxPlayback_[s] != 0)
 				fx_.SetSlot(s, static_cast<Fx>(FxOf(fxPlayback_[s])), depth);
+			else if (randomHere)
+				fx_.SetSlot(s, randomFxEffect_, RandomFxDepth(depth));
 			else
 				fx_.SetSlot(s, Fx::None, 0);
+		}
+
+		// TAPE STOP reaches back and brakes what is already ringing, on the
+		// RISING EDGE of the effect. Edge, not level: SetTapeStop() installs a
+		// fresh full-scale ramp each call, so doing this every tick would keep
+		// resetting the wind-down and the kit would never actually stop.
+		//
+		// Hits that start DURING the hold are handled separately, in
+		// TriggerVoice() — between the two, holding D+B brakes everything.
+		{
+			const bool stopNow = (fx_.TriggerFx() == Fx::TapeStop);
+			if (stopNow && !tapeStopWasOn_)
+				drums_.TapeStopAll(kTapeStopMin
+				                 + ((FxSlotDepth(kD) * kTapeStopRange) >> 12));
+			tapeStopWasOn_ = stopNow;
 		}
 
 		loop_.SetTempo(KnobVal(Knob::X));
@@ -1253,7 +1442,7 @@ private:
 		// Each lane decides for itself whether the hand or the recording is
 		// driving this tick. Moving the knob mutes that lane's playback while
 		// you move it and for a moment after; letting go hands it back.
-		const int32_t mainVal = filterLane_.Update(KnobVal(Knob::Main));
+		const int32_t mainVal = filterLane_.Update(MainVal());
 		const int32_t toneVal = toneLane_.Update(KnobVal(Knob::Y));
 
 		// In FX1 the Main knob is the effect's DEPTH, so it must not also be
@@ -1290,10 +1479,10 @@ private:
 			// button down deliberately does nothing at all. fxParShift_ is
 			// -1 then, and RecordKnobs ignores the value.
 			loop_.RecordKnobs(filterLane_.HandOwns() && !mainIsDepth,
-			                  KnobVal(Knob::Main),
+			                  MainVal(),
 			                  toneLane_.HandOwns(), KnobVal(Knob::Y),
 			                  fxPacked,
-			                  fxParShift_, KnobVal(Knob::Main),
+			                  fxParShift_, MainVal(),
 			                  filterLane_.HandOwns() && fxParShift_ >= 0);
 		}
 
@@ -1325,6 +1514,8 @@ private:
 			// tick, which at 40bpm is dozens of control steps and would give a
 			// click that is on more than it is off.
 			if (loop_.BeatEdge()) clickTimer_ = kClickSamples;
+
+			GlitchTick();
 
 			int8_t  voices[Looper::kMaxFirePerTick];
 			uint8_t vel[Looper::kMaxFirePerTick];
@@ -2018,6 +2209,21 @@ private:
 	/// Each slot's replayed parameter curve. A position, not a hold, so it
 	/// does not expire — it stays until the next recorded point moves it.
 	int32_t  fxParPlayback_[kNumFxSlots] = { 2048, 2048, 2048, 2048 };
+	/// Was TAPE STOP on last tick? Its brake fires on the rising edge only —
+	/// see the note where DrumKit::TapeStopAll() is called.
+	bool     tapeStopWasOn_ = false;
+
+	/// The effect Pulse In 2 is currently forcing, and where it lives.
+	/// Rolled once per rising edge and held while the gate is high.
+	Fx       randomFxEffect_ = Fx::None;
+	int8_t   randomFxSlot_   = kD;
+	bool     randomFxOn_     = false;
+
+	/// This card's PRNG state. DrumKit owns its own for noise; the CV
+	/// features need one that is not being consumed at audio rate, or the
+	/// two would correlate. Seeded to anything non-zero (xorshift32 never
+	/// returns 0 and must never be given it).
+	uint32_t rng_ = 0xC0FFEEu;
 	/// The last voice the loop fired, for STUTTER to repeat.
 	int8_t   lastVoice_    = -1;
 	int32_t  stutterTicks_ = 0;
@@ -2038,6 +2244,10 @@ private:
 	// outputs
 	int32_t gateTimer_  = 0;
 	int32_t clickTimer_ = 0;
+	/// The two glitch gates on CV Out 1/2. Counted down in SAMPLES so their
+	/// width does not follow the tempo — see GlitchTick().
+	int32_t glitch1Timer_ = 0;
+	int32_t glitch2Timer_ = 0;
 
 	/// Set at 48kHz when a Pulse In 1 edge arrives, consumed by the 3kHz
 	/// control tick. See ProcessSample for why this cannot be polled directly.
@@ -2136,6 +2346,13 @@ int main()
 	gCard = &card;
 	multicore_launch_core1(core1Entry);
 	gUsbReady = true;
+
+	// Jack detection. Without this Connected() always answers false, and
+	// every CV feature below silently never engages — the whole expansion
+	// depends on knowing which sockets have cables in them.
+	//
+	// Must precede Run(), which never returns.
+	card.EnableNormalisationProbe();
 
 	card.Run();   // never returns
 }

@@ -262,15 +262,55 @@ browser will be able to re-point it at runtime. See
 | | |
 |---|---|
 | **CV In 1** | one output of Four Voltages — the instrument |
+| **CV In 2** | takes over the Main knob while patched |
 | **Pulse In 1** | external clock, one edge per beat |
+| **Pulse In 2** | while high, a random effect is applied |
+| **Audio In 1** | depth of that random effect |
+| **Audio In 2** | chaos — how busy the glitch outputs are |
 | **Main** | DJ filter, or FX depth while in FX mode |
 | **X** | tempo, 40–240 BPM (ignored while clocked) |
 | **Y** | kit character — pitch and decay on synth voices, playback rate on samples |
 | **Audio Out 1 / 2** | the drum bus, mono, both the same |
+| **CV Out 1** | glitch gates, sparse and beat-anchored |
+| **CV Out 2** | glitch gates, dense and syncopated |
 | **Pulse Out 1** | gate on every hit |
 | **Pulse Out 2** | click, one per beat |
 | **LED 4 / 5** | recording / beat |
-| **CV Out 1 / 2** | unassigned |
+
+## Patching it
+
+Everything above works unpatched — the card is played from its own panel and
+nothing here is required. But six sockets turn it into something you can
+drive from the rest of the rack.
+
+**CV In 2 takes the Main knob.** Whatever Main does in the current mode is
+then under voltage: the DJ filter in DRUMS and MUTE, the held effect's depth
+in FX. It overrides rather than offsets, the same way an external clock
+overrides the tempo knob — a cable wins.
+
+**Pulse In 2 fires a random effect** for exactly as long as it is high. It is
+level-sensitive, not edge-triggered, so the gate's *width* is the effect's
+duration. The effect is rolled once when the gate opens and held until it
+closes, and it sits below both your hands and anything recorded — so it
+colours the slots you are not using rather than fighting you for one.
+**Audio In 1** sets its depth.
+
+**Audio In 2 is chaos**, and it drives the two glitch outputs. Turning it up
+raises the odds of any division firing *and* widens the pool: at the bottom
+only beats are candidates, at the top every half-division is, so more chaos
+is finer as well as busier. Past about two thirds the dense output starts
+producing ratchets. It never reaches certainty — a stream that fires on every
+candidate is a pulse train, not a random one.
+
+**CV Out 1 and 2 are the glitch gates.** Both follow the live quantise grid,
+so they always agree with what the card is recording to. CV Out 1 is sparse,
+weighted hard toward the downbeat, with longer gates — usable as an accent
+track on its own. CV Out 2 is dense, syncopated, deliberately skipping the
+beat that CV Out 1 already owns.
+
+> **The patch worth trying first:** CV Out 2 into Pulse In 2. The card's own
+> glitch generator now fires its own random effects, and Audio In 2 is the
+> single knob that takes it from occasional to falling apart.
 
 ## Patterns are sound-agnostic
 

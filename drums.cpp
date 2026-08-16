@@ -454,6 +454,12 @@ void DrumKit::TriggerVoice(int8_t voice, int32_t yKnob,
 	if (tapeStopSamples > 0) slot.SetTapeStop(tapeStopSamples);
 }
 
+void __not_in_flash_func(DrumKit::TapeStopAll)(int32_t fallSamples)
+{
+	for (int i = 0; i < kMaxVoices; i++)
+		if (voice_[i].Active()) voice_[i].SetTapeStop(fallSamples);
+}
+
 /// Choose a voice slot: a free one if there is one, otherwise the QUIETEST.
 ///
 /// A blind round robin — `next_ = (next_ + 1) % n` — takes the next slot

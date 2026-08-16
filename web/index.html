@@ -633,6 +633,23 @@ footer {
       <li>Otherwise just power-cycle it &mdash; the saved calibration survives, so it comes straight back up playable</li>
     </ul>
 
+    <h4>Patching the card</h4>
+    <ul>
+      <li><strong>CV In 2</strong> takes over the Main knob while patched &mdash; the DJ filter in Drums
+          and Mute, the held effect's depth in FX. A cable wins, the same way an external clock
+          overrides the tempo knob</li>
+      <li><strong>Pulse In 2</strong>, while high, applies a random effect for exactly as long as the
+          gate lasts &mdash; a new effect is rolled each time it goes high. <strong>Audio In 1</strong>
+          sets that effect's depth</li>
+      <li><strong>Audio In 2</strong> is chaos: how often and how finely <strong>CV Out 1</strong>
+          (sparse, beat-anchored) and <strong>CV Out 2</strong> (dense, syncopated) glitch. Both follow
+          whatever quantise grid is live on the card</li>
+      <li>Patch <strong>CV Out 2 into Pulse In 2</strong> and the card fires random effects at itself
+          &mdash; the payoff patch, and the best single test that this is all working</li>
+      <li>None of this is configured here; it is fixed in firmware and playable the moment you patch a
+          cable. See the project <a href="../README.md">README</a> for the fuller explanation</li>
+    </ul>
+
     <button class="dialog-close" id="help-close">Close</button>
   </div>
 </div>

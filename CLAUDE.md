@@ -310,22 +310,21 @@ trusting them:
 - **Gate is not tempo-synced.** Its rate divides the sample clock, so it does
   not lock to the loop. Deliberate — a gate that slowed with the pattern is
   just tremolo — but worth revisiting.
-- **The CV expansion is UNTESTED on hardware.** Six jacks changed meaning at
-  once (see "Patching it" in README.md), and every path is gated on
-  `Connected()`, which needs `EnableNormalisationProbe()` — newly called in
-  `main()`. The first bench test should be **nothing patched**, confirming
-  the card behaves exactly as it did before.
-- **The glitch probabilities are tuned on paper, not by ear.** The curve was
-  checked arithmetically (5% unpatched, 75% ceiling, divisions widening at
-  `kChaosDivisionOpens`, ratchets at `kChaosRatchetOpens`) but never heard.
-  Expect to move those constants in `nibbleko.h` after playing it.
-- **Glitch gate LENGTH is a fraction of the division it fired on**, not of
-  the beat and not a fixed millisecond figure. Both of those were tried and
-  both were wrong: fixed ms gave click-length gates that applied a random
-  effect for too short a time to hear, and beat-length gates overran the next
-  candidate in all nine tempo/grid combinations, holding the line permanently
-  high. If these are retuned, check the gate still fits its interval at
-  240bpm on the 16th grid — the tightest case.
+- **The CV expansion is confirmed working on hardware** — CV In 2 override,
+  Pulse In 2's random effect, and the CV Out 1/2 glitch gates (including the
+  CV Out 2 → Pulse In 2 self-patch) have all been played, not just built.
+  Two real bugs were found and fixed this way before this note was last
+  updated: gate width was first a fixed millisecond figure (too short to
+  hear the effect it triggered) and then sized against the beat (which
+  overran the next candidate and held the output permanently high) — see
+  `nibbleko.h`'s `kGateLongNum`/`kGateShortNum`/`kGateRatchetNum` for the
+  fraction-of-the-division fix that actually worked.
+- **The glitch probabilities are tuned on paper, not by ear.** The curve
+  itself (5% unpatched, 75% ceiling, divisions widening at
+  `kChaosDivisionOpens`, ratchets at `kChaosRatchetOpens`) was checked
+  arithmetically but not tuned by listening — confirmed present and audible
+  on hardware, not confirmed as the *right* feel. Treat the constants in
+  `nibbleko.h` as a first draft.
 - **An intermittent fault is recorded in `docs/OPEN-BUGS.md`**, seen once and
   never reproduced.
 

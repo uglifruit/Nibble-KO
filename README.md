@@ -6,12 +6,13 @@ module — with a browser sample manager.**
 
 *Four buttons. Ten voltages. Twelve drums, yours to fill.*
 
-> **Status: in development, playable on hardware.** Drums, the looper, mute
-> groups, twelve performance effects, three pattern slots, sample playback,
-> the browser sample manager and flash-saved calibration all work. Patterns
-> are still RAM-only, so they are lost at power-off, and the CV expansion is
-> written but not yet bench-tested. See [CLAUDE.md](CLAUDE.md) for exactly
-> what's here and what isn't.
+> **Status: 1.0, released.** Drums, the looper, mute groups, twelve
+> performance effects, three pattern slots, sample playback, the browser
+> sample manager, flash-saved calibration and the CV expansion all work on
+> hardware. One deliberate gap: patterns are still RAM-only, so they are
+> lost at power-off — saving them, a WebUI loop-length setting, and JSON
+> pattern export/import are the roadmap for 1.1. See
+> [CLAUDE.md](CLAUDE.md) for exactly what's here and what isn't.
 
 A program card for the [Music Thing Modular Workshop System
 Computer](https://www.musicthing.co.uk/workshopsystem/) that expands the
@@ -355,16 +356,36 @@ making it survive a power cycle.
 WAVs are converted in the browser to the same 8-bit 48kHz format the built-in
 samples use. See [`web/README.md`](web/README.md).
 
-## What isn't done
+## What isn't done, and the roadmap for 1.1
+
+**Patterns are RAM only** — they do not survive a power cycle. That is the
+one deliberate gap in 1.0: the rest of the card (drums, looper, effects,
+mutes, sample management, calibration, the CV expansion) is played and
+working, but a pattern you have built is gone at power-off. Saving it needs
+its own small flash region and SysEx messages — a pattern is a bare event
+list under 2KB with no audio attached, so this is close to a straight dump
+over USB, not a redesign.
+
+Once that lands, two more follow naturally from the same work:
+
+- **Loop length as a WebUI setting** — `kLoopTicks` is only ever used in
+  ordinary wrap arithmetic in `looper.cpp`, nothing is sized by it, so making
+  it runtime-settable (2 bars, 1 bar) is a small change once patterns are
+  being transferred anyway.
+- **Pattern export/import as JSON** — once a pattern can leave the card over
+  USB, saving it to a file and loading it back is the same transfer with a
+  different endpoint. Sound-agnostic patterns (see below) make this more
+  useful than it sounds: a pattern exported from one kit plays on a
+  completely different one.
+
+Two smaller things, unrelated to the roadmap above:
 
 - **Only the Kit and Samples are configurable from the browser.** Mute
-  groups, patterns and loop settings need SysEx messages that do not exist
-  yet, so those tabs are reference displays. Pattern transfer is the obvious
-  next one.
+  groups and loop settings need SysEx messages that do not exist yet, so
+  those tabs are reference displays.
 - **Deleting a sample frees the slot, not the space.** Uploads append and
   nothing compacts the region; only Erase All reclaims bytes. The Samples tab
   shows both numbers.
-- **Patterns are RAM only** — they do not survive a power cycle.
 - **Mute groups are hardcoded** three ways by voice index.
 
 ## Credits

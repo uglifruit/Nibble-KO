@@ -1,10 +1,10 @@
-draft: true
+draft: false
 Name: NIBBLE-KO
 short-description: A 12-voice synth/sample percussion looper for the Four Voltages module, with a browser sample manager
 Language: C++ (ComputerCard)
 Creator: Andy Jenkinson (uglifruit)
-Version: "0.1.0"
-Status: In development
+Version: "1.0.0"
+Status: Released
 License: CC-BY-4.0
 repository: https://github.com/uglifruit/Nibble-KO
 Editor: web
@@ -20,9 +20,9 @@ contact:
   social:
     github: https://github.com/uglifruit
 
-# No released UF2 yet - the card plays, saves its calibration and takes
-# uploaded samples, but patterns are still RAM-only. See CLAUDE.md.
-uf2: []
+uf2:
+  - path: UF2/nibbleko.uf2
+    name: NIBBLE-KO 1.0.0
 
 tags:
   - drums
@@ -83,11 +83,13 @@ summary: |
   following the live quantise grid. Patch either back into Pulse In 2 and the
   card glitches itself.<br><br>
 
-  IN DEVELOPMENT. Drums, the four-bar looper, mute groups, the effects,
-  pattern slots, sample playback, the browser sample manager and flash-saved
-  calibration all work on hardware. Patterns are still held in RAM only, so
-  they are lost at power-off. See the repository's CLAUDE.md for what exists
-  and what is still designed.
+  1.0. Drums, the four-bar looper, mute groups, the twelve effects, pattern
+  slots, sample playback, the browser sample manager, flash-saved calibration
+  and the CV expansion above are all played and working on hardware. One gap
+  is known and deliberate for this release: pattern slots are RAM only, so
+  they do not survive a power cycle - saving them to flash, a WebUI setting
+  for loop length, and JSON pattern export/import are the roadmap for the
+  next one. See the repository's README for the fuller detail.
 
 panel:
   inputs:

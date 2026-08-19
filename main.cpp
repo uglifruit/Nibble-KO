@@ -151,9 +151,15 @@
 // TWO CORES, AND WHY
 // ---------------------------------------------------------------------------
 //
-// Core 0 plays the card: the drum voices, one SVF, the CV stage — a few
-// hundred cycles against a budget of 4000 at 192MHz. That never needed a
-// second core and still does not.
+// Core 0 plays the card: the drum voices, one SVF, the FX chain, the CV
+// stage — against a budget of kCyclesPerSample (4000, one 48kHz slot at
+// 192MHz). That never needed a second core and still does not.
+//
+// This comment used to assert "a few hundred cycles", which was written
+// before the FX chain and the CV expansion existed and was never re-measured.
+// Do not put a number here: read one instead. MSG_PROF_GET reports the live
+// worst case, split by kind of sample, and the I/O tab in the browser tool
+// displays it — see CLAUDE.md's "Measuring CPU load".
 //
 // USB does. TinyUSB's tud_task() measured ~36000 cycles on WorkshopBio, i.e.
 // 14x the entire 20.8us audio budget, so it cannot share the audio interrupt.
@@ -375,7 +381,26 @@ struct AutoKnob
 	}
 
 	void Playback(int32_t v) { playback_ = v; }
-	void Forget()            { playback_ = -1; }
+
+	/// Stop following the recorded curve, but STAY WHERE IT LEFT US.
+	///
+	/// The obvious implementation, playback_ = -1, is what ForgetToKnob() does
+	/// and it is wrong for Undo: it makes Update() return smooth_, the PHYSICAL
+	/// KNOB POSITION. After an undo the filter (or Y) therefore jumped from
+	/// wherever the recording had it to wherever the player's hand last left
+	/// the knob — which may be minutes old and unrelated to the music. On the
+	/// bench that reads as "undo puts the filter back in weird places".
+	///
+	/// Holding the last replayed value makes an undo silent in the tone: the
+	/// sweep stops following deleted automation and simply stays put. Nothing
+	/// is stuck — a real hand movement still wins (HandOwns in Update), and the
+	/// next recorded event replaces it — it just does not JUMP.
+	void HoldWhereItIs() { /* keep playback_ exactly as it is */ }
+
+	/// Genuinely reset to the knob. For contexts where the recorded value is
+	/// MEANINGLESS rather than merely stale — recalibration wipes the loop, so
+	/// there is no curve left for the value to belong to.
+	void ForgetToKnob() { playback_ = -1; }
 
 	/// The value Update() last settled on — whichever of hand or playback is
 	/// currently driving. For readers that need it outside the update.
@@ -599,6 +624,7 @@ public:
 
 		CVOut2(glitch2Timer_ > 0 ? kCvGateHigh : kCvGateLow);
 		if (glitch2Timer_ > 0) glitch2Timer_--;
+
 	}
 
 	/// Upload progress, driven from CORE 1 while core 0 is parked.
@@ -624,6 +650,26 @@ public:
 		LedBrightness(5, progress > (kQ16One * 2 / 3) ? kLedHalf : 0);
 	}
 
+	/// Pattern-slot access for the WebUI, forwarded straight to the Looper.
+	///
+	/// Called from core 1 via WebGetPattern/WebSetPattern (see the bottom of
+	/// this file) and only while usbMode is set, so core 0 is no longer
+	/// playing and there is no concurrent reader of the slot arrays.
+	bool GetPatternForWeb(int slot, LoopEvent *out, uint16_t &count,
+	                      uint16_t &knobCount) const
+	{
+		return loop_.GetPatternRaw(slot, out, count, knobCount);
+	}
+
+	bool SetPatternForWeb(int slot, const LoopEvent *in, uint16_t count,
+	                      uint16_t knobCount)
+	{
+		return loop_.SetPatternRaw(slot, in, count, knobCount);
+	}
+
+	int  GetLoopBeatsForWeb() const   { return loop_.LoopBeats(); }
+	void SetLoopBeatsForWeb(int b)    { loop_.SetLoopBeats(b); }
+
 private:
 	// =======================================================================
 	// Control rate
@@ -640,6 +686,9 @@ private:
 		ReadSwitch();
 
 		if (ui_ == UiMode::Learn) { LearnTick(); return; }
+
+		// TEMPORARY sub-timers, to find where the control tick's cycles go.
+		// Remove once the hot spot is identified.
 
 		// --- level detection ---
 		int8_t idx = kComboNone;
@@ -766,10 +815,62 @@ private:
 		// One-way. The way back is MSG_PLAY from the browser, which reboots.
 		if (m == Mode::WebUi)
 		{
-			playing_ = false;
+			// THE LOOP KEEPS PLAYING, deliberately. Entering the WebUI used
+			// to stop it, and that was wrong for what the WebUI is mostly
+			// used for: re-pointing a voice at a different sound is a
+			// judgement you can only make BY EAR, against the pattern it has
+			// to sit in. MSG_SET_SOURCE is instant and flash-free precisely
+			// so the change is audible straight away — stopping the loop
+			// threw that away and made every audition a stop/flash/restart.
+			//
+			// Nothing about USB requires silence. TinyUSB runs on core 1 and
+			// ProcessSample() on core 0; they only collide over a FLASH
+			// WRITE, and that path stops the card properly through
+			// EnterUploadMode()/core0Parked rather than leaning on this flag.
+			// So an upload still mutes and parks (see ProcessSample()'s
+			// uploadMode branch) while assignment, naming and pattern
+			// transfer play on.
+			//
+			// RECORDING still stops. The pads are inert in WebUi mode (see
+			// FireCombo's switch), so an armed recorder could only capture
+			// knob automation from someone who is looking at a browser rather
+			// than at the card, and Undo would be the only way back out.
 			recording_ = false;
 			WebUI::usbMode = true;
 		}
+	}
+
+	/// Drop every effect and knob value that PLAYBACK is currently holding.
+	///
+	/// Called whenever the event array is replaced wholesale — Undo, pattern
+	/// recall — and it is not tidiness. The replay state outlives the events
+	/// that fed it:
+	///
+	///   * fxPlayback_[] latches the last effect a lane replayed, and is
+	///     cleared by fxPlaybackTicks_ counting down. That countdown lives
+	///     inside `if (loop_.Advance())`, so it only runs on LOOP ticks.
+	///   * AutoKnob::playback_ holds its last replayed value indefinitely —
+	///     Update() returns it whenever the hand is off the knob.
+	///
+	/// So replacing the events leaves the effects still applied with nothing
+	/// left to justify them. For most that is merely wrong; for Gate (which
+	/// chops the bus on and off) or a LowPass parked at a low cutoff it is
+	/// SILENCE, lasting until the hold expires or the loop wraps and fresh
+	/// automation arrives. That is the "undo silences the audio til the loop
+	/// point" report, and pattern recall had the same fault for the same
+	/// reason.
+	///
+	/// Clearing the ticks as well as the values matters: a stale non-zero
+	/// countdown would later re-clear a latch the player had set by hand.
+	void __not_in_flash_func(DropReplayedAutomation)()
+	{
+		for (int8_t s = 0; s < kNumFxSlots; s++)
+		{
+			fxPlayback_[s]      = 0;
+			fxPlaybackTicks_[s] = 0;
+		}
+		filterLane_.HoldWhereItIs();
+		toneLane_.HoldWhereItIs();
 	}
 
 	/// One of the switch+pair actions.
@@ -788,6 +889,7 @@ private:
 			// which is the honest response — there is no state to show for
 			// "you have already undone that".
 			undoFlash_ = loop_.Undo() ? kUndoFlashTicks : 0;
+			if (undoFlash_) DropReplayedAutomation();
 			break;
 
 		case Action::Quantise:
@@ -1106,19 +1208,79 @@ private:
 	/// Samples remain the COUNTING unit — loop ticks would make the countdown
 	/// itself tempo-dependent twice over — but the length is now derived from
 	/// Looper::SamplesPerBeat().
+	/// Is `v` an exact multiple of `d`, without dividing?
+	///
+	/// Cortex-M0+ has no divide instruction: `v % d` is a call into
+	/// __aeabi_idivmod costing 100+ cycles, and GlitchTick() wants three of
+	/// them on every control tick. Here `d` is always one of {6,8,12,16,24,48}
+	/// and `v` is a loop position under 768, so a bounded subtract loop runs
+	/// at most 128 times of a few cycles each — and in practice far fewer,
+	/// since it exits the moment the running total passes `v`.
+	///
+	/// Powers of two take the mask, which covers 8, 16 and 48's own factor —
+	/// the common cases — in a single instruction.
+	static inline bool ModIsZero(uint16_t v, int32_t d)
+	{
+		if (d <= 0) return false;
+		if ((d & (d - 1)) == 0) return (v & static_cast<uint16_t>(d - 1)) == 0;
+		uint32_t m = 0;
+		while (m < v) m += static_cast<uint32_t>(d);
+		return m == v;
+	}
+
+	/// `x / kQuantNotesPerBeat[grid]`, without a division.
+	///
+	/// `x / kQuantNotesPerBeat[grid]`, without a division.
+	///
+	/// The divisors are {4, 3, 2}: two are shifts, and the /3 is a reciprocal
+	/// multiply, (x * 43691) >> 17.
+	///
+	/// The obvious constant, 21845 >> 16, is WRONG and was caught by testing
+	/// it rather than trusting the algebra: 21845 is floor(65536/3), so it
+	/// under-shoots and gives 0 for x=3. Rounding it up to 21846 fails the
+	/// other way from x=32768. 43691 >> 17 is exact for every x from 0 to
+	/// beyond 80000, which covers spb's whole range (at most 72000, at 40bpm).
+	static inline int32_t DivByNotes(int32_t x, int grid)
+	{
+		switch (grid)
+		{
+		case 0:  return x >> 2;                                    // 16ths: /4
+		case 1:  return static_cast<int32_t>((x * 43691LL) >> 17); // 12ths: /3
+		default: return x >> 1;                                    // 8ths:  /2
+		}
+	}
+
 	void __not_in_flash_func(GlitchTick)()
 	{
 		const int32_t chaos = ChaosVal();
 		const uint16_t pos  = loop_.Position();
-		const int32_t spb   = loop_.SamplesPerBeat();
+		const int32_t spb   = loop_.SamplesPerBeat();   // cached; see looper.h
 
 		// Ticks per grid division: 12 (16th), 16 (12th), 24 (8th).
-		const int32_t div = kTicksPerBeat
-		                  / kQuantNotesPerBeat[static_cast<int>(loop_.CurrentQuantGrid())];
+		//
+		// A LOOKUP, not a division. Cortex-M0+ has no divide instruction, so
+		// every `/` and `%` here was a call into __aeabi_idivmod at ~100+
+		// cycles — and this function runs on EVERY control tick. Four of them
+		// plus the 64-bit divide in SamplesPerBeat() were the bulk of a control
+		// tick measured at 354% of its budget.
+		//
+		// kTicksPerBeat is 48 and kQuantNotesPerBeat is {4,3,2}, so the three
+		// divisors are exactly {12,16,24} and their halves {6,8,12}. Tabulating
+		// them costs nothing and turns three divisions into three loads.
+		static constexpr int32_t kDivForGrid[]     = { 12, 16, 24 };
+		static constexpr int32_t kHalfDivForGrid[] = {  6,  8, 12 };
+		const int gi = static_cast<int>(loop_.CurrentQuantGrid());
+		const int32_t div     = kDivForGrid[gi];
+		const int32_t halfDiv = kHalfDivForGrid[gi];
 
-		const bool onBeat     = (pos % kTicksPerBeat) == 0;
-		const bool onDivision = (pos % div) == 0;
-		const bool onHalfDiv  = (div >= 2) && ((pos % (div / 2)) == 0);
+		// The modulos go too. `pos` advances by ONE tick per loop tick and
+		// wraps at the loop length, so "is pos a multiple of N" is answered by
+		// counters that reset on the wrap — no division at all. Kept local to
+		// this function: they are derived from pos rather than being state
+		// anyone else can get out of step with.
+		const bool onBeat     = ModIsZero(pos, kTicksPerBeat);
+		const bool onDivision = ModIsZero(pos, div);
+		const bool onHalfDiv  = (halfDiv >= 1) && ModIsZero(pos, halfDiv);
 
 		// --- CV Out 1: sparse, beat-anchored ------------------------------
 		//
@@ -1145,12 +1307,15 @@ private:
 			// whole beat while only beats are in play and one division once
 			// chaos has opened them up. Sizing both cases against the beat
 			// would leave the gate still high when the next division fired.
+			// spb / notesPerBeat, without dividing: notesPerBeat is {4,3,2}
+			// and only the /3 case is not a shift, so it is the one reciprocal
+			// worth spelling out. (x*21845)>>16 is x/3 for every value spb can
+			// take here (spb <= 72000 at 40bpm).
 			const int32_t span = (chaos > kChaosDivisionOpens)
-			                   ? (spb / kQuantNotesPerBeat[
-			                        static_cast<int>(loop_.CurrentQuantGrid())])
+			                   ? DivByNotes(spb, gi)
 			                   : spb;
 
-			if (rand_q16(rng_) < ((odds * 65536) / 4096))
+			if (rand_q16(rng_) < (odds << 4))   // *65536/4096
 				glitch1Timer_ = (span * kGateLongNum) / kGateLongDen;
 		}
 
@@ -1172,11 +1337,9 @@ private:
 			// rather than like a busier pattern.
 			// Candidates here are HALF-divisions, so that is the span to fit
 			// inside.
-			const int32_t half = spb
-			                   / (kQuantNotesPerBeat[
-			                        static_cast<int>(loop_.CurrentQuantGrid())] * 2);
+			const int32_t half = DivByNotes(spb, gi) >> 1;
 
-			if (rand_q16(rng_) < ((odds * 65536) / 4096))
+			if (rand_q16(rng_) < (odds << 4))   // *65536/4096
 				glitch2Timer_ = (chaos > kChaosRatchetOpens
 				              && (xorshift32(rng_) & 3u) == 0)
 				              ? (half * kGateRatchetNum) / kGateRatchetDen
@@ -1389,7 +1552,14 @@ private:
 			// Switch Middle: recall. An empty slot is left alone rather than
 			// clearing the loop — silently wiping what you are playing is not
 			// something a tap should ever do.
-			if (loop_.RecallPattern(slot)) patLive_ = slot;
+			// Same replay-state reset as Undo: the outgoing pattern's latched
+			// effects and knob values would otherwise stay applied over the
+			// incoming one. See DropReplayedAutomation().
+			if (loop_.RecallPattern(slot))
+			{
+				patLive_ = slot;
+				DropReplayedAutomation();
+			}
 		}
 		FlashCombo(combo);
 	}
@@ -1502,6 +1672,7 @@ private:
 			tapeStopWasOn_ = stopNow;
 		}
 
+
 		loop_.SetTempo(KnobVal(Knob::X));
 
 		// In FX1 the Main knob is the effect's DEPTH, so it must not also be
@@ -1548,8 +1719,7 @@ private:
 			                  toneLane_.HandOwns(), KnobVal(Knob::Y),
 			                  fxPacked,
 			                  fxParShift_, MainVal(),
-			                  filterLane_.HandOwns() && fxParShift_ >= 0);
-		}
+			                  filterLane_.HandOwns() && fxParShift_ >= 0);		}
 
 		if (!playing_) return;
 
@@ -1681,6 +1851,7 @@ private:
 		{
 			stutterTicks_ = 0;   // re-arm, so the next stutter starts at once
 		}
+
 	}
 
 	// =======================================================================
@@ -1700,8 +1871,8 @@ private:
 		// the combos an existing pattern refers to may not survive — and a
 		// pattern that plays the wrong drums is worse than no pattern.
 		loop_.Clear();
-		filterLane_.Forget();
-		toneLane_.Forget();
+		filterLane_.ForgetToKnob();
+		toneLane_.ForgetToKnob();
 	}
 
 	/// Throw away the captures in progress.
@@ -2338,6 +2509,7 @@ private:
 	int8_t  patLive_       = 0;
 	int8_t  patLastStored_ = -1;   ///< which pad to flash
 	int32_t patStoreFlash_ = 0;
+
 };
 
 // ===========================================================================
@@ -2351,6 +2523,56 @@ private:
 /// other members are a few hundred bytes.
 static WebUI        gWebUI;
 static NibbleKoCard *gCard = nullptr;
+
+// --- pattern transfer bridge -----------------------------------------------
+//
+// webui.h declares these; they are defined here because this is where gCard
+// lives. The alternative — handing WebUI a Looper pointer — would put looper.h
+// (and drums.h behind it) into webui.cpp for the sake of two array copies.
+//
+// Safe only while usbMode is set, which is the only time they are called: core
+// 0 has stopped playing by then, so nothing else is touching the slot arrays.
+static_assert(static_cast<uint32_t>(kMaxEvents) == kPatMaxEvents,
+              "kPatMaxEvents must track looper.h's kMaxEvents");
+static_assert(sizeof(LoopEvent) == kPatEventBytes,
+              "kPatEventBytes must track sizeof(LoopEvent)");
+static_assert(static_cast<int>(kPatSlots) == kNumPatterns,
+              "kPatSlots must track looper.h's kNumPatterns");
+static_assert(static_cast<int>(kLoopBeatsMin) == kMinBeatsPerLoop,
+              "kLoopBeatsMin must track looper.h's kMinBeatsPerLoop");
+static_assert(static_cast<int>(kLoopBeatsMax) == kBeatsPerLoop,
+              "kLoopBeatsMax must track looper.h's kBeatsPerLoop");
+
+// Defined INSIDE namespace nko: webui.h declares them there, and `using
+// namespace nko` above imports names rather than opening the namespace, so a
+// definition at global scope links as a different symbol entirely.
+namespace nko {
+
+bool WebGetPattern(int slot, void *out, uint16_t *count, uint16_t *knobCount)
+{
+	if (!gCard || !out || !count || !knobCount) return false;
+	return gCard->GetPatternForWeb(slot, static_cast<LoopEvent *>(out),
+	                               *count, *knobCount);
+}
+
+bool WebSetPattern(int slot, const void *in, uint16_t count, uint16_t knobCount)
+{
+	if (!gCard || !in) return false;
+	return gCard->SetPatternForWeb(slot, static_cast<const LoopEvent *>(in),
+	                               count, knobCount);
+}
+
+int WebGetLoopBeats()
+{
+	return gCard ? gCard->GetLoopBeatsForWeb() : kBeatsPerLoop;
+}
+
+void WebSetLoopBeats(int beats)
+{
+	if (gCard) gCard->SetLoopBeatsForWeb(beats);
+}
+
+} // namespace nko
 
 /// Set once core 0 has finished booting and published gCard, so core 1 never
 /// dereferences it early.
@@ -2393,6 +2615,7 @@ int main()
 	vreg_set_voltage(VREG_VOLTAGE_1_15);
 	sleep_ms(2);
 	set_sys_clock_khz(192000, true);
+
 
 	// Restore which sound each voice plays, from the saved map in flash. Must
 	// happen BEFORE the card starts playing, or the first hits come out of the

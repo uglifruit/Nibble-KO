@@ -6,13 +6,13 @@ module — with a browser sample manager.**
 
 *Four buttons. Ten voltages. Twelve drums, yours to fill.*
 
-> **Status: 1.0.1, released.** Drums, the looper, mute groups, twelve
+> **Status: 1.2.0, released.** Drums, the looper, mute groups, twelve
 > performance effects, three pattern slots, sample playback, the browser
 > sample manager, flash-saved calibration and the CV expansion all work on
-> hardware. One deliberate gap: patterns are still RAM-only, so they are
-> lost at power-off — saving them, a WebUI loop-length setting, and JSON
-> pattern export/import are the roadmap for 1.1. See
-> [CLAUDE.md](CLAUDE.md) for exactly what's here and what isn't.
+> hardware. Patterns save to and load from your computer as JSON, and the loop
+> keeps playing while the browser tool is connected. **New in 1.2.0:** the loop
+> length is settable from 4 to 16 beats, so odd time signatures are playable.
+> See [CLAUDE.md](CLAUDE.md) for exactly what's here and what isn't.
 
 A program card for the [Music Thing Modular Workshop System
 Computer](https://www.musicthing.co.uk/workshopsystem/) that expands the
@@ -347,19 +347,71 @@ and only the last two links know anything about sound.
 
 So re-pointing a voice at a different sample, or uploading a new one, changes
 what every existing pattern *plays* without altering a byte of the pattern.
-The same four bars can be a Cheetah kit or your own recordings. It also means
-patterns will transfer over the web app as bare event lists — under 2KB, no
-audio attached — and land on a card with a completely different sample set.
+The same four bars can be a Cheetah kit or your own recordings.
 
 That falls out of NIBBLE's decision to record the *voice* rather than the
 *gesture*, which it made for an unrelated reason: so re-arranging the gesture
 map couldn't silently change an old loop.
 
+## Saving patterns *(new in 1.1.0)*
+
+The card's three pattern slots live in RAM and are lost at power-off. The
+browser tool is where they persist: open the **Patterns** tab, and each slot
+has **Save…** and **Load…**.
+
+Save writes a plain JSON file to your computer — that file is the permanent
+copy. Load pushes one back onto a slot, ready to play immediately with
+**hold D, tap A/B/C**. Neither touches flash, so neither reboots the card.
+
+Because patterns are sound-agnostic (above), the file holds voice numbers and
+no audio at all — a few KB of readable JSON:
+
+```json
+{
+  "card": "nibble-ko", "kind": "pattern", "slot": 0,
+  "knobCount": 4,
+  "events": [ { "tick": 12, "what": 3, "value": 100 } ]
+}
+```
+
+So a pattern saved against one kit plays against a completely different one,
+and patterns can be shared, versioned or hand-edited like any other text
+file. Events are validated on the way in, and the card re-sorts and
+range-checks whatever arrives, so a hand-edited file cannot corrupt playback.
+
+The loop **keeps playing** while the browser tool is connected, so a voice
+can be re-pointed at a new sound and judged by ear against the pattern it has
+to sit in. Only recording stops; an upload still silences the card, because
+writing flash stops everything.
+
+## Loop length *(new in 1.2.0)*
+
+The **Patterns** tab sets how many beats the loop plays before repeating,
+anywhere from **4 to 16**. Sixteen — four bars of 4/4 — is the default and
+what every earlier version did.
+
+This is what makes odd metres playable. The click on Pulse Out 2 is
+**unstressed** and nothing on the card marks beat one, so the length is a
+count rather than a time signature: fourteen beats is 7/4 twice, or
+5/4 + 2/4 + 3/4 + 4/4, or an eleven and a three. The card does not decide,
+and neither does the click — you do, by what you play against it.
+
+**Shortening is non-destructive.** The card always records against the full
+sixteen beats and the setting only moves where the playhead wraps, so hits
+past the new end are hidden rather than erased and restoring the length brings
+them back exactly as they were. Pattern slots always hold the full sixteen.
+
+The caveat is inherent rather than a bug, and worth knowing before you reach
+for it mid-take: since nothing marks beat one, changing the length moves the
+join to an arbitrary point in what you played. The part that vanishes — or the
+gap a longer setting exposes — can land anywhere in the phrase.
+
 ## The browser setup tool
 
-Hold the switch **Down** and press **B + D**: the card goes silent, all four
-pads glow, and it appears over USB as a MIDI device. Open [`web/index.html`](web/index.html)
-in Chrome or Edge and click Connect.
+Hold the switch **Down** and press **B + D**: all four pads glow and the card
+appears over USB as a MIDI device. Open [`web/index.html`](web/index.html)
+in Chrome or Edge and click Connect. **The loop carries on playing**, so you
+can hear each change against it; only recording stops.
 
 Uploaded samples form a **library**, not a per-pad slot: one recording can be
 played by several voices at once and costs the space of one. Every gesture
@@ -370,27 +422,15 @@ making it survive a power cycle.
 WAVs are converted in the browser to the same 8-bit 48kHz format the built-in
 samples use. See [`web/README.md`](web/README.md).
 
-## What isn't done, and the roadmap for 1.1
+## What isn't done
 
-**Patterns are RAM only** — they do not survive a power cycle. That is the
-one deliberate gap in 1.0: the rest of the card (drums, looper, effects,
-mutes, sample management, calibration, the CV expansion) is played and
-working, but a pattern you have built is gone at power-off. Saving it needs
-its own small flash region and SysEx messages — a pattern is a bare event
-list under 2KB with no audio attached, so this is close to a straight dump
-over USB, not a redesign.
 
-Once that lands, two more follow naturally from the same work:
-
-- **Loop length as a WebUI setting** — `kLoopTicks` is only ever used in
-  ordinary wrap arithmetic in `looper.cpp`, nothing is sized by it, so making
-  it runtime-settable (2 bars, 1 bar) is a small change once patterns are
-  being transferred anyway.
-- **Pattern export/import as JSON** — once a pattern can leave the card over
-  USB, saving it to a file and loading it back is the same transfer with a
-  different endpoint. Sound-agnostic patterns (see below) make this more
-  useful than it sounds: a pattern exported from one kit plays on a
-  completely different one.
+**Patterns live in RAM, and that is now a choice rather than a gap.** They
+still do not survive a power cycle on the card — but since 1.1.0 the browser
+tool saves a slot to a JSON file on your computer and loads it back, so the
+file *is* the permanent copy. An on-card flash store was considered and
+rejected: it would duplicate persistence the file already provides, at the
+cost of a flash region and a write path. See **Saving patterns** above.
 
 Two smaller things, unrelated to the roadmap above:
 
@@ -401,6 +441,84 @@ Two smaller things, unrelated to the roadmap above:
   nothing compacts the region; only Erase All reclaims bytes. The Samples tab
   shows both numbers.
 - **Mute groups are hardcoded** three ways by voice index.
+
+## Changelog
+
+### 1.2.0
+
+**Loop length is settable, 4 to 16 beats**, on the Patterns tab of the browser
+tool. This is what makes odd time signatures playable: the click is unstressed
+and nothing marks beat one, so fourteen beats is 7/4 twice, or 5/4 + 2/4 +
+3/4 + 4/4, or whatever you hear in it. See
+[Loop length](#loop-length-new-in-120).
+
+It is a **playback** setting, so shortening is non-destructive: the card always
+records against the full sixteen beats, and putting the length back brings the
+hidden hits with it, unchanged. The caveat is inherent rather than a bug —
+since nothing marks beat one, changing the length moves the join to an
+arbitrary point in what you played.
+
+**Fixed: Undo put the filter and tone knobs in arbitrary places.** Undo drops
+the automation it deleted, but it did that by handing the lane back to the
+PHYSICAL KNOB — whose resting position may be minutes old and unrelated to the
+music, so the tone jumped. It now holds the last replayed value instead: an
+undo is silent in the tone, and the next hand movement or recorded event takes
+over as usual.
+
+**Fixed: saving a pattern failed on busy patterns.** The dump sent one chunk
+per USB service pass, and on a dense patch core 0 is busy enough that core 1
+gets very few passes — so the transfer could not finish before the browser gave
+up, and the failure appeared on exactly the patterns most worth saving. The
+dump now drains in one pass.
+
+**Minor optimisations to the control path**: software division removed from
+the per-tick code (the Cortex-M0+ has no divide instruction, so each one was a
+function call), the control-rate functions moved into RAM, and the automation
+replace-scan bounded to its window rather than walking the whole event array.
+
+### 1.1.0
+
+**Patterns save to and load from your computer.** The Patterns tab in the
+browser tool gains **Save…** and **Load…** per slot, writing plain JSON.
+The card still keeps its three slots in RAM, so the file on disk is the
+permanent copy. See [Saving patterns](#saving-patterns-new-in-110).
+
+**The loop keeps playing while the browser tool is connected.** Entering the
+WebUI used to stop it, which made every audition a stop/reassign/restart —
+wrong for the thing the tool is mostly used for, since choosing a sound is a
+judgement made by ear against the pattern it sits in. Only recording stops
+now; an upload still silences the card, because writing flash stops
+everything.
+
+**Fixed: Undo could silence the loop until the start of the next pass.**
+Undo replaces the event array and rebuilds the playback cursor from the
+playhead. If the undone pass had added its hits *behind* the playhead, the
+shortened array ran out and the cursor was left past the end — and since it
+is only rewound when the loop wraps, nothing sounded for the rest of the bar.
+It presented as intermittent, because it only bit when the undone hits were
+behind the playhead. Recalling a *sparser* pattern mid-bar dropped out the
+same way and is fixed by the same change.
+
+**Fixed: the browser could read a reply meant for an earlier request.**
+Replies share one queue, and a burst reply (the sample library, a pattern
+dump) is drained only as far as its terminator — so anything queued behind it
+was handed to the next request instead. It showed up as saving a pattern
+before any slot had been stored failing with an unexpected-reply error.
+
+**Firmware now advertises its capabilities.** An unknown SysEx message is
+answered with silence, which a browser cannot tell apart from a card that
+failed to reply — so a page talking to older firmware reported "the card did
+not respond" and looked like a bug in working code. `MSG_INFO` now carries a
+feature-bits byte, and the Patterns tab says *"this card's firmware predates
+pattern transfer"* instead of timing out.
+
+### 1.0.1
+
+A latched voltage was overriding recorded FX depth.
+
+### 1.0.0
+
+First release.
 
 ## Credits
 

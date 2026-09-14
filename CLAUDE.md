@@ -299,6 +299,41 @@ send-in-progress flag before arming its own, and the browser side should skip
 non-matching replies for a bounded number of attempts rather than fail on the
 first mismatch — a busy card can take many `Task()` passes to catch up.
 
+### A USB product string is not an identity
+
+The browser tool found the card by matching its MIDI port name against
+`/nibble|workshop|pico/i`. A user could not connect on macOS for weeks: card in
+WebUI mode, pads breathing, 1.2.0, enumerating fine, page stuck on "Waiting…".
+
+Every card in the Workshop System family ships the **same VID/PID**
+(`2E8A:10C1` — it is the Computer's own, and cannot change). macOS CoreMIDI
+caches a MIDI Studio name against that USB identity, so a card plugged in after
+a sibling **inherits the sibling's name**. Theirs came up as `MTMComputer`, and
+nothing matched. Windows truncates to ~31 characters or reports a generic `USB
+Audio Device`; ALSA truncates to `NIBBLE-KO (Work` and matched `/nibble/` by
+luck rather than design. The name is the HOST's guess at what the device is.
+
+Two things made it worse than a failed match. The retry watcher tested the
+**same name** the search did, so the Waiting… state could not resolve even once
+the card was properly in WebUI mode — the page ignored the very event it was
+waiting for. And it never said what it HAD seen, though it had the port list
+all along, which is why it cost the reporter two sessions weeks apart.
+
+`web/index.html` now identifies the card by **asking**: `probeForCard()` sends
+`MSG_HELLO` to each plausible port and takes whatever answers with a valid
+`MSG_INFO`. The name survives only as the search ORDER, so the ordinary case
+still costs one round trip. `MSG_HELLO` is read-only on the card, which is what
+makes probing a stranger's port acceptable.
+
+The general rule: **when a device cannot be told apart by its USB identity, it
+must be identified by what it ANSWERS.** Anything that matches on a name is
+matching on a string some other layer is free to rewrite. `tools/discoversim.js`
+models this; note that its two acceptance tests guard different things — the
+`MSG_INFO` type test rejects a loopback echoing our own HELLO back, the
+21-byte length test rejects a v1 card. Mutation-testing found that the type
+test could be deleted with nothing noticing, which is how the third case in
+that model came to exist.
+
 ### The Python models are not decoration
 
 They have caught, before hardware: a stalling slew, a 0.33x soft clip, a
@@ -581,6 +616,7 @@ python tools/dspsim.py      # DJ filter stability, soft clip
 python tools/loopsim.py     # event ordering, overdub, tempo
 python tools/patsim.py      # pattern transfer: wire framing + the trust boundary
 python tools/checkyaml.py   # info.yaml parses AND is structurally complete
+node tools/discoversim.js   # the browser finding the card, under any port name
 ```
 
 `patsim.py` is the one model that spans a language boundary rather than
@@ -592,6 +628,15 @@ stays self-consistent, so a round trip within either one still passes. It was
 written by mutation-testing the checks, which is what caught `webui.cpp`
 claiming a chunk size was "the largest that fits" when the cap is not reached
 until twice that.
+
+`discoversim.js` is the other one, and it is JavaScript because the code it
+models is. Rather than mirroring the page, it **runs it**: it extracts the
+block between the `// >>> discovery` and `// <<< discovery` sentinels in
+`web/index.html` and evaluates it against fake MIDI ports, so it cannot drift
+from what ships. Keep that block DOM-free and dependent on nothing but `MFR`
+and `MSG`, or the model stops being able to load it. It takes an optional page
+path (`node tools/discoversim.js some/copy.html`), which is how its checks get
+mutation-tested against a deliberately broken copy.
 
 All pass, and the card builds clean with `-Wall -Wextra -Wdouble-promotion
 -Wfloat-conversion`. `tools/syntax.sh` does **not** link, so it cannot catch a

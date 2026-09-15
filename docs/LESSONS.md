@@ -217,6 +217,47 @@ to stop it flagging combinations that played perfectly.
 theory. The theory tells you where it breaks; only playing it tells you whether
 the warning is useful or merely correct.
 
+### If a browser tool finds your card by its USB product string, it will fail
+
+Any card with a WebUI (or any web-based setup tool) is at risk of this, not
+just this one — **every Workshop System Computer card shares one USB VID/PID**
+(`2E8A:10C1`). The product string (`"NIBBLE-KO (Workshop)"`, or whatever a
+given card's `usb_descriptors.c` sets) is the only thing that tells cards
+apart, and browsers are told it is a hint, not an identity, whether they act
+that way or not:
+
+- **macOS CoreMIDI caches a MIDI Studio entry against the VID/PID**, so a card
+  plugged in after a sibling card can enumerate under the *sibling's* cached
+  name. Reported from the field on NIBBLE-KO 1.2.0: card in WebUI mode,
+  enumerating fine, page stuck on "Waiting…" — it had come up as `MTMComputer`.
+- Windows WinMM truncates port names to ~31 characters, or reports some
+  class-compliant devices under a generic driver name (`USB Audio Device`).
+- ALSA truncates hard enough that a longer product string loses its
+  distinguishing suffix.
+
+A regex like `/nibble|workshop|pico/i` against the port name will pass on the
+bench, where you always plug in a freshly-cached device, and fail in the field
+for exactly the users you can't watch it fail for.
+
+**Fix:** identify the card by what it **answers**, not by its name. Send a
+read-only hello message (NIBBLE-KO's `MSG_HELLO`) to every plausible MIDI port
+and take whichever one replies with a valid response — the name only decides
+the search *order*, tried first so the ordinary case still costs one round
+trip. Skip obvious loopbacks (IAC, MIDI Through, Network Session) so you don't
+poke them for no reason. When nothing answers, list the port names you
+actually saw rather than a silent "not found" — the failure otherwise looks
+identical to "not plugged in" and "wrong mode" and costs the user a diagnosis
+you already had the data for.
+
+See NIBBLE-KO's `web/index.html` (`probeForCard()`/`probeOne()`, bracketed by
+`// >>> discovery` / `// <<< discovery` sentinels) and `tools/discoversim.js`,
+which extracts and runs that block against fake MIDI ports rather than
+mirroring it — the model that caught, by mutation-testing its own checks, that
+the reply-type test and the reply-length test each guard a *different* forgery
+and neither can be dropped. Both port directly: any card's `MSG_HELLO`-shaped
+handshake is already read-only, which is what makes probing a stranger's port
+safe to do unprompted.
+
 ---
 
 ## 3. Platform rules that are not negotiable

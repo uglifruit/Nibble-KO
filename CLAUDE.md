@@ -11,7 +11,7 @@ where every voice is independently synthesised or sample-based, chosen and
 uploaded from a browser WebUI — the sample-management pattern from
 `../WorkshopBio`.
 
-## Current status: RELEASED, v1.2.0
+## Current status: RELEASED, v1.2.1
 
 Builds to `build/nibbleko.uf2` — **7.78% flash, 87.64% RAM**. Everything is
 played and confirmed on a Workshop Computer:
@@ -24,7 +24,14 @@ including the CV Out 2 → Pulse In 2 self-patch.
 **Shipped.** `info.yaml` is `draft: false`, `Status: Released`. The card is
 in the community catalogue as `releases/102_Nibble-KO` in
 `TomWhitwell/Workshop_Computer` — merged there at 1.0.0 (PR #362), with
-1.0.1 following in PR #365. Own repo: `uglifruit/Nibble-KO`.
+1.0.1 (PR #365), 1.1.0 (PR #367), 1.2.0 (PR #371) and 1.2.1 (PR #412)
+following. Own repo: `uglifruit/Nibble-KO`.
+
+**1.2.1 fixed the browser tool failing to find the card under a cached MIDI
+name** (see "A USB product string is not an identity" in the gotchas below,
+and `docs/LESSONS.md` §2 for the portable version — any Workshop System card
+with a browser tool has the same latent bug, since every card shares one USB
+VID/PID). Page only; the firmware is unchanged from 1.2.0.
 
 **The RAM figure is the WebUI's 160KB upload staging buffer**, not a leak.
 It only fits because USB is modal — nothing instantiates `WebUI` until
@@ -333,6 +340,12 @@ models this; note that its two acceptance tests guard different things — the
 21-byte length test rejects a v1 card. Mutation-testing found that the type
 test could be deleted with nothing noticing, which is how the third case in
 that model came to exist.
+
+**This is a Workshop System family bug, not a NIBBLE-KO one** — every card
+sharing the VID/PID means any sibling with a browser tool (WorkshopBio,
+WorkshopZX, future cards) can hit the identical failure. `docs/LESSONS.md`
+§2 has the portable write-up, meant to be read by a *different* card's
+CLAUDE.md, without this file's context.
 
 ### The Python models are not decoration
 
